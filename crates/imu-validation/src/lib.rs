@@ -132,23 +132,23 @@ pub mod spec {
             .then_some(cfg.reference_gravity_g)
             .filter(|g| *g > 0.0);
         let min_samples_per_face = cfg.min_samples_per_face.max(1);
-        let magnitude_tolerance_g = cfg
-            .magnitude_tolerance_g
-            .is_finite()
-            .then_some(cfg.magnitude_tolerance_g.abs())
-            .unwrap_or(0.25);
-        let scale_min = cfg
-            .scale_factor_min
-            .is_finite()
-            .then_some(cfg.scale_factor_min.abs())
-            .unwrap_or(0.2)
-            .max(1.0e-6);
-        let scale_max = cfg
-            .scale_factor_max
-            .is_finite()
-            .then_some(cfg.scale_factor_max.abs())
-            .unwrap_or(5.0)
-            .max(scale_min);
+        let magnitude_tolerance_g = if cfg.magnitude_tolerance_g.is_finite() {
+            cfg.magnitude_tolerance_g.abs()
+        } else {
+            0.25
+        };
+        let scale_min = if cfg.scale_factor_min.is_finite() {
+            cfg.scale_factor_min.abs()
+        } else {
+            0.2
+        }
+        .max(1.0e-6);
+        let scale_max = if cfg.scale_factor_max.is_finite() {
+            cfg.scale_factor_max.abs()
+        } else {
+            5.0
+        }
+        .max(scale_min);
         let mut faces = Vec::new();
         for face in [
             SignedAxis::PosX,
@@ -442,11 +442,11 @@ pub mod noise {
 
     /// Returns logarithmically spaced Allan cluster sizes `m` for `n` samples.
     /// Sizes are unique, start at 1, and only include values with at least one
-    /// overlapping Allan term (`n >= 2*m + 1`).
+    /// overlapping Allan term (`n > 2*m`).
     pub fn cluster_sizes_log(n: usize) -> Vec<usize> {
         let mut out = Vec::new();
         let mut m = 1usize;
-        while n >= 2 * m + 1 {
+        while n > 2 * m {
             if out.last() != Some(&m) {
                 out.push(m);
             }
@@ -478,11 +478,7 @@ pub mod noise {
         }
         let mut points = Vec::new();
         for m in sizes {
-            let term_count = if m > 0 && n >= 2 * m + 1 {
-                n - 2 * m + 1
-            } else {
-                0
-            };
+            let term_count = if m > 0 && n > 2 * m { n - 2 * m + 1 } else { 0 };
             if !timing_ok || !data_ok || m == 0 || term_count == 0 {
                 points.push(AllanPoint {
                     cluster_size: m,
@@ -596,12 +592,13 @@ pub mod noise {
                 }
                 let xs: Vec<_> = pts[start..end].iter().map(|(_, t, _)| t.ln()).collect();
                 let ys: Vec<_> = pts[start..end].iter().map(|(_, _, d)| d.ln()).collect();
-                if let Some((slope, intercept, r2)) = regression(&xs, &ys) {
-                    if (slope + 0.5).abs() <= tol && r2 >= r2_min {
-                        let score = end - start;
-                        if best.is_none_or(|b| score > b.1 - b.0) {
-                            best = Some((start, end, slope, intercept, r2));
-                        }
+                if let Some((slope, intercept, r2)) = regression(&xs, &ys)
+                    && (slope + 0.5).abs() <= tol
+                    && r2 >= r2_min
+                {
+                    let score = end - start;
+                    if best.is_none_or(|b| score > b.1 - b.0) {
+                        best = Some((start, end, slope, intercept, r2));
                     }
                 }
             }

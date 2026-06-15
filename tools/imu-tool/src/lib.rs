@@ -124,6 +124,7 @@ pub fn monitor(port: &str, baud: u32, out: Option<&Path>) -> ToolResult {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn orientation_capture(
     port: &str,
     baud: u32,
@@ -326,6 +327,7 @@ fn make_timestamped_run_dir(out_dir: &Path, label: &str) -> io::Result<std::path
     unreachable!()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn stationary_suite(
     port: &str,
     baud: u32,
@@ -536,24 +538,24 @@ pub fn parse_raw_line(line: &str) -> Option<RawSample> {
         };
         match key {
             "timestamp_s" => {
-                if let Ok(v) = value.parse::<f64>() {
-                    if v.is_finite() {
-                        timestamp_s = Some(v);
-                    }
+                if let Ok(v) = value.parse::<f64>()
+                    && v.is_finite()
+                {
+                    timestamp_s = Some(v);
                 }
             }
             "timestamp_us" | "ts_us" => {
-                if let Ok(v) = value.parse::<f64>() {
-                    if v.is_finite() {
-                        timestamp_s = Some(v / 1_000_000.0);
-                    }
+                if let Ok(v) = value.parse::<f64>()
+                    && v.is_finite()
+                {
+                    timestamp_s = Some(v / 1_000_000.0);
                 }
             }
             "timestamp_ns" | "ts_ns" => {
-                if let Ok(v) = value.parse::<f64>() {
-                    if v.is_finite() {
-                        timestamp_s = Some(v / 1_000_000_000.0);
-                    }
+                if let Ok(v) = value.parse::<f64>()
+                    && v.is_finite()
+                {
+                    timestamp_s = Some(v / 1_000_000_000.0);
                 }
             }
             "sequence" | "seq" => {
@@ -577,6 +579,7 @@ pub fn parse_raw_line(line: &str) -> Option<RawSample> {
         sequence,
     })
 }
+#[allow(clippy::type_complexity)]
 pub fn parse_log(path: &Path) -> std::io::Result<(BTreeMap<String, Vec<String>>, Vec<RawSample>)> {
     let text = fs::read_to_string(path)?;
     let kv_re = Regex::new(r"^([a-zA-Z0-9_]+)=(.+)$").unwrap();
@@ -600,12 +603,10 @@ pub fn parse_log(path: &Path) -> std::io::Result<(BTreeMap<String, Vec<String>>,
             samples.push(s);
             continue;
         }
-        if summary {
-            if let Some(c) = kv_re.captures(line) {
-                kv.entry(c[1].to_string())
-                    .or_insert_with(Vec::new)
-                    .push(c[2].to_string())
-            }
+        if summary && let Some(c) = kv_re.captures(line) {
+            kv.entry(c[1].to_string())
+                .or_insert_with(Vec::new)
+                .push(c[2].to_string())
         }
     }
     Ok((kv, samples))
@@ -715,10 +716,10 @@ fn parse_sixface(path: &Path) -> std::io::Result<BTreeMap<String, Vec<RawSample>
             cur = None;
             continue;
         }
-        if let (Some(f), Some(s)) = (cur.as_ref(), parse_raw_line(line)) {
-            if let Some(v) = m.get_mut(f) {
-                v.push(s)
-            }
+        if let (Some(f), Some(s)) = (cur.as_ref(), parse_raw_line(line))
+            && let Some(v) = m.get_mut(f)
+        {
+            v.push(s)
         }
     }
     Ok(m)
@@ -1209,8 +1210,8 @@ mod tests {
             report.timing_quality.status,
             imu_validation::VerdictStatus::Pass
         );
-        assert_eq!(report.timing_quality.timestamp_present, true);
-        assert_eq!(report.timing_quality.sequence_present, true);
+        assert!(report.timing_quality.timestamp_present);
+        assert!(report.timing_quality.sequence_present);
     }
 
     #[test]

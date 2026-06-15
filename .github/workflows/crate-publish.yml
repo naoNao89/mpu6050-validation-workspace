@@ -1,0 +1,26 @@
+name: crate publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      crate:
+        description: "Crate to publish"
+        required: true
+        type: choice
+        options:
+          - imu-core
+          - imu-validation
+          - imu-tool
+
+jobs:
+  publish:
+    name: publish ${{ inputs.crate }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Publish dry run
+        run: cargo publish -p ${{ inputs.crate }} --dry-run
