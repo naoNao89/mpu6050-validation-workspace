@@ -322,4 +322,22 @@ mod tests {
         let raw = RawAccelGyroTemp::new([0; 3], 340, [0; 3]);
         assert!((raw.temp_degrees_c() - 37.53).abs() < f64::EPSILON);
     }
+
+    #[test]
+    fn regression_raw_sample_flags_gyro_all_minus_one_as_suspicious() {
+        let raw = RawAccelGyroTemp::new([1, 2, 3], 25, [-1, -1, -1]);
+        assert!(raw.is_suspicious());
+    }
+
+    #[test]
+    fn regression_raw_sample_flags_i16_sentinels_as_suspicious() {
+        let raw = RawAccelGyroTemp::new([i16::MAX, 2, 3], 25, [4, i16::MIN, 6]);
+        assert!(raw.is_suspicious());
+    }
+
+    #[test]
+    fn regression_raw_sample_accepts_nominal_values() {
+        let raw = RawAccelGyroTemp::new([-6500, -9900, -9600], 3700, [720, 190, -320]);
+        assert!(!raw.is_suspicious());
+    }
 }
