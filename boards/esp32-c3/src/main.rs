@@ -538,6 +538,22 @@ fn log_verification_summary(probe: ProbeResult) {
 fn read_motion_sample(mpu: &mut BoardMpu<'_>, address: u8, raw_sequence: &mut u64) {
     match mpu.read_raw_accel_gyro_temp() {
         Ok(raw) => {
+            if raw.is_suspicious() {
+                println!(
+                    "RAW 0x{:02x}: suspicious sample skipped: accel=({}, {}, {}) temp_raw={} gyro=({}, {}, {}) sequence={}",
+                    address,
+                    raw.accel[0],
+                    raw.accel[1],
+                    raw.accel[2],
+                    raw.temp,
+                    raw.gyro[0],
+                    raw.gyro[1],
+                    raw.gyro[2],
+                    *raw_sequence
+                );
+                return;
+            }
+
             let timestamp_us = Instant::now().duration_since_epoch().as_micros();
             #[cfg(feature = "binary-frames")]
             {

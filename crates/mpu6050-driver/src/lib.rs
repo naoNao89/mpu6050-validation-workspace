@@ -134,6 +134,28 @@ impl RawAccelGyroTemp {
     pub fn temp_degrees_c(self) -> f64 {
         self.temp as f64 / TEMP_LSB_PER_DEG_C + TEMP_OFFSET_DEG_C
     }
+
+    pub const fn is_suspicious(self) -> bool {
+        contains_i16_sentinel(self.accel)
+            || contains_i16_sentinel(self.gyro)
+            || self.temp == i16::MIN
+            || self.temp == i16::MAX
+            || all_minus_one(self.accel)
+            || all_minus_one(self.gyro)
+    }
+}
+
+const fn contains_i16_sentinel(values: [i16; 3]) -> bool {
+    values[0] == i16::MIN
+        || values[0] == i16::MAX
+        || values[1] == i16::MIN
+        || values[1] == i16::MAX
+        || values[2] == i16::MIN
+        || values[2] == i16::MAX
+}
+
+const fn all_minus_one(values: [i16; 3]) -> bool {
+    values[0] == -1 && values[1] == -1 && values[2] == -1
 }
 
 pub fn raw_to_imu_sample(raw: RawAccelGyroTemp) -> ImuSample {
@@ -321,5 +343,23 @@ mod tests {
     fn raw_temperature_converts_to_degrees_celsius() {
         let raw = RawAccelGyroTemp::new([0; 3], 340, [0; 3]);
         assert!((raw.temp_degrees_c() - 37.53).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn regression_raw_sample_flags_gyro_all_minus_one_as_suspicious() {
+        let raw = RawAccelGyroTemp::new([1, 2, 3], 25, [-1, -1, -1]);
+        assert!(raw.is_suspicious());
+    }
+
+    #[test]
+    fn regression_raw_sample_flags_i16_sentinels_as_suspicious() {
+        let raw = RawAccelGyroTemp::new([i16::MAX, 2, 3], 25, [4, i16::MIN, 6]);
+        assert!(raw.is_suspicious());
+    }
+
+    #[test]
+    fn regression_raw_sample_accepts_nominal_values() {
+        let raw = RawAccelGyroTemp::new([-6500, -9900, -9600], 3700, [720, 190, -320]);
+        assert!(!raw.is_suspicious());
     }
 }
