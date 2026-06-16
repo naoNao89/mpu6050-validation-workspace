@@ -738,15 +738,38 @@ impl BinaryFrameDecoder {
             self.last_seq = Some(seq);
             let i16le = |o| i16::from_le_bytes([self.buf[o], self.buf[o + 1]]) as i32;
             let ts = u64::from_le_bytes(self.buf[14..22].try_into().unwrap());
+            let address = self.buf[4] as i32;
+            let ax = i16le(22);
+            let ay = i16le(24);
+            let az = i16le(26);
+            let temp_raw = i16le(28);
+            let gx = i16le(30);
+            let gy = i16le(32);
+            let gz = i16le(34);
+            let gyro_all_minus_one = gx == -1 && gy == -1 && gz == -1;
+            let has_sentinel = [ax, ay, az, temp_raw, gx, gy, gz]
+                .iter()
+                .any(|v| *v == i16::MAX as i32 || *v == i16::MIN as i32);
+            if gyro_all_minus_one || has_sentinel {
+                let reason = match (gyro_all_minus_one, has_sentinel) {
+                    (true, true) => "gyro all -1; sentinel i16 min/max field",
+                    (true, false) => "gyro all -1",
+                    (false, true) => "sentinel i16 min/max field",
+                    (false, false) => unreachable!(),
+                };
+                ev.push(BinaryDecodeEvent::Warning(format!(
+                    "suspicious sample address=0x{address:02x} sequence={seq}: {reason}"
+                )));
+            }
             ev.push(BinaryDecodeEvent::Sample(RawSample {
-                address: self.buf[4] as i32,
-                ax: i16le(22),
-                ay: i16le(24),
-                az: i16le(26),
-                temp_raw: i16le(28),
-                gx: i16le(30),
-                gy: i16le(32),
-                gz: i16le(34),
+                address,
+                ax,
+                ay,
+                az,
+                temp_raw,
+                gx,
+                gy,
+                gz,
                 timestamp_s: Some(ts as f64 / 1_000_000.0),
                 sequence: Some(seq),
             }));
