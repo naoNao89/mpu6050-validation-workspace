@@ -13,7 +13,7 @@ use esp_hal::{
 #[cfg(feature = "binary-frames")]
 use esp_println::Printer;
 use esp_println::println;
-use mpu6050_driver::{AccelRange, Address, GyroRange, Identity, Mpu6050};
+use mpu6050_driver::{AccelRange, Address, GyroRange, Identity, Mpu6050, RawAccelGyroTemp};
 
 const MPU_ADDR_AD0_LOW: u8 = 0x68;
 const MPU_ADDR_AD0_HIGH: u8 = 0x69;
@@ -535,56 +535,84 @@ fn log_verification_summary(probe: ProbeResult) {
     println!("verification_summary_end");
 }
 
-fn read_motion_sample(mpu: &mut BoardMpu<'_>, address: u8, raw_sequence: &mut u64) {
+fn read_motion_sample_retry_once(mpu: &mut BoardMpu<'_>, address: u8, raw_sequence: &mut u64) {
     match mpu.read_raw_accel_gyro_temp() {
         Ok(raw) => {
-            if raw.is_suspicious() {
-                println!(
-                    "RAW 0x{:02x}: suspicious sample skipped: accel=({}, {}, {}) temp_raw={} gyro=({}, {}, {}) sequence={}",
-                    address,
-                    raw.accel[0],
-                    raw.accel[1],
-                    raw.accel[2],
-                    raw.temp,
-                    raw.gyro[0],
-                    raw.gyro[1],
-                    raw.gyro[2],
-                    *raw_sequence
-                );
+            if !raw.is_suspicious() {
+                emit_motion_sample(address, raw_sequence, raw);
                 return;
             }
 
-            let timestamp_us = Instant::now().duration_since_epoch().as_micros();
-            #[cfg(feature = "binary-frames")]
-            {
-                let frame = encode_binary_frame(
-                    address,
-                    *raw_sequence,
-                    timestamp_us as u64,
-                    raw.accel,
-                    raw.temp,
-                    raw.gyro,
-                );
-                Printer::write_bytes(&frame);
+            match mpu.read_raw_accel_gyro_temp() {
+                Ok(retry) if !retry.is_suspicious() => {
+                    #[cfg(not(feature = "binary-frames"))]
+                    println!(
+                        "RAW 0x{:02x}: suspicious sample recovered by retry sequence={}",
+                        address, *raw_sequence
+                    );
+                    emit_motion_sample(address, raw_sequence, retry);
+                }
+                Ok(retry) => {
+                    log_suspicious_sample("retry_suspicious_skipped", address, *raw_sequence, retry)
+                }
+                Err(error) => println!(
+                    "RAW 0x{:02x}: suspicious sample retry failed: {:?}",
+                    address, error
+                ),
             }
-            #[cfg(not(feature = "binary-frames"))]
-            println!(
-                "RAW 0x{:02x}: accel=({}, {}, {}) temp_raw={} gyro=({}, {}, {}) timestamp_us={} sequence={} timestamp_source=device_instant",
-                address,
-                raw.accel[0],
-                raw.accel[1],
-                raw.accel[2],
-                raw.temp,
-                raw.gyro[0],
-                raw.gyro[1],
-                raw.gyro[2],
-                timestamp_us,
-                *raw_sequence
-            );
-            *raw_sequence = raw_sequence.wrapping_add(1);
         }
         Err(error) => println!("RAW 0x{:02x}: read failed: {:?}", address, error),
     }
+}
+
+fn emit_motion_sample(address: u8, raw_sequence: &mut u64, raw: RawAccelGyroTemp) {
+    let timestamp_us = Instant::now().duration_since_epoch().as_micros();
+    #[cfg(feature = "binary-frames")]
+    {
+        let frame = encode_binary_frame(
+            address,
+            *raw_sequence,
+            timestamp_us as u64,
+            raw.accel,
+            raw.temp,
+            raw.gyro,
+        );
+        Printer::write_bytes(&frame);
+    }
+    #[cfg(not(feature = "binary-frames"))]
+    println!(
+        "RAW 0x{:02x}: accel=({}, {}, {}) temp_raw={} gyro=({}, {}, {}) timestamp_us={} sequence={} timestamp_source=device_instant",
+        address,
+        raw.accel[0],
+        raw.accel[1],
+        raw.accel[2],
+        raw.temp,
+        raw.gyro[0],
+        raw.gyro[1],
+        raw.gyro[2],
+        timestamp_us,
+        *raw_sequence
+    );
+    *raw_sequence = raw_sequence.wrapping_add(1);
+}
+
+fn log_suspicious_sample(reason: &str, address: u8, sequence: u64, raw: RawAccelGyroTemp) {
+    #[cfg(not(feature = "binary-frames"))]
+    println!(
+        "RAW 0x{:02x}: suspicious sample {}: accel=({}, {}, {}) temp_raw={} gyro=({}, {}, {}) sequence={}",
+        address,
+        reason,
+        raw.accel[0],
+        raw.accel[1],
+        raw.accel[2],
+        raw.temp,
+        raw.gyro[0],
+        raw.gyro[1],
+        raw.gyro[2],
+        sequence
+    );
+    #[cfg(feature = "binary-frames")]
+    let _ = (reason, address, sequence, raw);
 }
 
 #[cfg(feature = "binary-frames")]
