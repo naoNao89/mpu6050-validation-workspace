@@ -98,6 +98,22 @@ The analyzer checks measured evidence such as:
 - temperature raw value not stuck
 - advanced scale-range, self-test, FIFO, and interrupt checks when present
 
+## Raw sample integrity layer
+
+The driver keeps `read_raw_accel_gyro_temp()` as an unmodified raw register-read
+primitive.
+
+For measurement workflows, use:
+
+- `read_raw_checked()`
+- `read_raw_with_retry(RawRetryPolicy::reject_after_retries(1))`
+
+This Level 1 layer rejects sentinel-like or observed invalid raw samples before
+calibration. It is not a motion filter and does not remove normal IMU noise.
+
+Normal noise, bias, scale error, axis misalignment, and temperature drift belong
+to calibration and signal-processing layers.
+
 ## Six-face and orientation tests
 
 Strict six-face capture requires physically rotating the module:
