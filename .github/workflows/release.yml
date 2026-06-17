@@ -35,7 +35,7 @@ jobs:
           sudo apt-get install -y pkg-config libudev-dev
       - name: Build imu-tool
         run: cargo build --locked -p imu-tool --release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.binary }}
@@ -51,7 +51,7 @@ jobs:
           cache-on-failure: true
       - name: Build firmware
         run: cargo build --locked -p mpu6050-esp32c3-bringup --release --target riscv32imc-unknown-none-elf
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mpu6050-esp32c3-bringup-elf
           path: target/riscv32imc-unknown-none-elf/release/mpu6050-esp32c3-bringup
