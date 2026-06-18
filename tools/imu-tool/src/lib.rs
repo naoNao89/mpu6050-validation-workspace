@@ -88,6 +88,113 @@ fn write_parent(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct IntegrityStats {
+    total: u64,
+    recovered: u64,
+    rejected: u64,
+    retry_error: u64,
+    accepted: u64,
+}
+
+impl IntegrityStats {
+    fn record_sample(&mut self) {
+        self.total = self.total.saturating_add(1);
+    }
+
+    fn record_event(&mut self, event: RawIntegrityEvent) {
+        match event.outcome.as_str() {
+            "recovered" => self.recovered = self.recovered.saturating_add(1),
+            "rejected" => self.rejected = self.rejected.saturating_add(1),
+            "retry_error" => self.retry_error = self.retry_error.saturating_add(1),
+            "accepted" => self.accepted = self.accepted.saturating_add(1),
+            _ => {}
+        }
+    }
+
+    fn record_text(&mut self, text: &str, line_buf: &mut String) {
+        line_buf.push_str(text);
+        while let Some(pos) = line_buf.find('\n') {
+            let mut line = line_buf.drain(..=pos).collect::<String>();
+            line.truncate(line.trim_end_matches(['\r', '\n']).len());
+            self.record_line(&line);
+        }
+    }
+
+    fn record_line(&mut self, line: &str) {
+        if parse_raw_line(line).is_some() {
+            self.record_sample();
+        }
+        if let Some(event) = parse_raw_integrity_event(line) {
+            self.record_event(event);
+        }
+    }
+
+    fn suspicious(&self) -> u64 {
+        self.recovered
+            .saturating_add(self.rejected)
+            .saturating_add(self.retry_error)
+            .saturating_add(self.accepted)
+    }
+
+    fn clean(&self) -> u64 {
+        self.total
+            .saturating_sub(self.recovered.saturating_add(self.accepted))
+    }
+
+    fn summary_line(&self) -> String {
+        format!(
+            "integrity_stats samples={} clean_samples={} suspicious_events={} recovered={} rejected={} retry_error={} accepted={}",
+            self.total,
+            self.clean(),
+            self.suspicious(),
+            self.recovered,
+            self.rejected,
+            self.retry_error,
+            self.accepted
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RawIntegrityEvent {
+    outcome: String,
+}
+
+fn parse_raw_integrity_event(line: &str) -> Option<RawIntegrityEvent> {
+    let mut fields = line.split_whitespace();
+    if fields.next()? != "raw_integrity_event" {
+        return None;
+    }
+    let mut outcome = None;
+    for field in fields {
+        let Some((key, value)) = field.split_once('=') else {
+            continue;
+        };
+        if key == "outcome" && !value.is_empty() {
+            outcome = Some(value.to_ascii_lowercase());
+        }
+    }
+    Some(RawIntegrityEvent { outcome: outcome? })
+}
+
+fn emit_integrity_stats<W: Write>(stats: &IntegrityStats, log: Option<&mut W>) -> io::Result<()> {
+    let line = stats.summary_line();
+    println!("{line}");
+    if let Some(log) = log {
+        writeln!(log, "{line}")?;
+        log.flush()?;
+    }
+    Ok(())
+}
+
+fn record_partial_text_line(stats: &mut IntegrityStats, line_buf: &str) {
+    let line = line_buf.trim_end_matches(['\r', '\n']).trim();
+    if !line.is_empty() {
+        stats.record_line(line);
+    }
+}
+
 fn read_serial_for<W: Write>(
     #[allow(unused_mut)] mut ser: &mut dyn serialport::SerialPort,
     seconds: f64,
@@ -126,6 +233,7 @@ fn read_serial_binary_for<W: Write>(
     ser: &mut dyn serialport::SerialPort,
     seconds: Option<f64>,
     out: &mut W,
+    mut stats: Option<&mut IntegrityStats>,
 ) -> io::Result<()> {
     let deadline = monitor_deadline(seconds, Instant::now());
     let mut buf = [0u8; 2048];
@@ -137,6 +245,9 @@ fn read_serial_binary_for<W: Write>(
                 for ev in dec.push(&buf[..n]) {
                     match ev {
                         BinaryDecodeEvent::Sample(s) => {
+                            if let Some(stats) = stats.as_mut() {
+                                stats.record_sample();
+                            }
                             let line = raw_sample_line(&s);
                             println!("{line}");
                             writeln!(out, "{line}")?;
@@ -167,7 +278,7 @@ pub fn capture(port: &str, baud: u32, seconds: f64, out: &Path, mode: StreamMode
     );
     match mode {
         StreamMode::Text => read_serial_for(&mut *ser, seconds, &mut f, |_| {})?,
-        StreamMode::Binary => read_serial_binary_for(&mut *ser, Some(seconds), &mut f)?,
+        StreamMode::Binary => read_serial_binary_for(&mut *ser, Some(seconds), &mut f, None)?,
     }
     writeln!(f, "\n# capture_end")?;
     Ok(0)
@@ -188,14 +299,18 @@ pub fn monitor(
         None
     };
     println!("--- monitoring {port} @{baud}, Ctrl-C to quit ---");
+    let mut stats = IntegrityStats::default();
     if mode == StreamMode::Binary {
-        if let Some(f) = log.as_mut() {
-            read_serial_binary_for(&mut *ser, duration, f)?;
+        let result = if let Some(f) = log.as_mut() {
+            read_serial_binary_for(&mut *ser, duration, f, Some(&mut stats))
         } else {
-            read_serial_binary_for(&mut *ser, duration, &mut io::sink())?;
-        }
+            read_serial_binary_for(&mut *ser, duration, &mut io::sink(), Some(&mut stats))
+        };
+        emit_integrity_stats(&stats, log.as_mut())?;
+        result?;
     } else {
         let mut buf = [0u8; 2048];
+        let mut line_buf = String::new();
         let deadline = monitor_deadline(duration, Instant::now());
         while before_monitor_deadline(deadline, Instant::now()) {
             match ser.read(&mut buf) {
@@ -208,11 +323,32 @@ pub fn monitor(
                         f.write_all(text.as_bytes())?;
                         f.flush()?;
                     }
+                    stats.record_text(&text, &mut line_buf);
                 }
                 Err(e) if e.kind() == io::ErrorKind::TimedOut => {}
-                Err(e) => return Err(Box::new(e)),
+                Err(e) => {
+                    record_partial_text_line(&mut stats, &line_buf);
+                    if !line_buf.is_empty() {
+                        println!();
+                        if let Some(f) = log.as_mut() {
+                            writeln!(f)?;
+                            f.flush()?;
+                        }
+                    }
+                    emit_integrity_stats(&stats, log.as_mut())?;
+                    return Err(Box::new(e));
+                }
             }
         }
+        if !line_buf.is_empty() {
+            record_partial_text_line(&mut stats, &line_buf);
+            println!();
+            if let Some(f) = log.as_mut() {
+                writeln!(f)?;
+                f.flush()?;
+            }
+        }
+        emit_integrity_stats(&stats, log.as_mut())?;
     }
     Ok(0)
 }
@@ -1478,6 +1614,130 @@ mod tests {
         assert_eq!(s.gx, 5);
         assert_eq!(s.timestamp_s, None);
         assert_eq!(s.sequence, None);
+    }
+
+    #[test]
+    fn raw_integrity_event_parser_accepts_outcome_with_extra_fields() {
+        let event = parse_raw_integrity_event(
+            "raw_integrity_event seq=28 outcome=recovered retries=1 address=0x68",
+        )
+        .unwrap();
+        assert_eq!(event.outcome, "recovered");
+
+        assert_eq!(parse_raw_integrity_event("RAW 0x68: accel=(1, 2, 3)"), None);
+        assert_eq!(
+            parse_raw_integrity_event("raw_integrity_event seq=28"),
+            None
+        );
+    }
+
+    #[test]
+    fn raw_integrity_event_parser_normalizes_outcome_and_ignores_noise() {
+        let event = parse_raw_integrity_event(
+            "raw_integrity_event reason=GyroAllMinusOne outcome=RECOVERED retries=1",
+        )
+        .unwrap();
+        assert_eq!(event.outcome, "recovered");
+
+        assert_eq!(
+            parse_raw_integrity_event("raw_integrity_event_extra outcome=recovered"),
+            None
+        );
+        assert_eq!(
+            parse_raw_integrity_event("raw_integrity_event outcome="),
+            None
+        );
+        assert_eq!(
+            parse_raw_integrity_event("raw_integrity_event outcome"),
+            None
+        );
+    }
+
+    #[test]
+    fn integrity_stats_counts_samples_events_and_summary() {
+        let mut stats = IntegrityStats::default();
+        let mut line_buf = String::new();
+        stats.record_text(
+            "RAW 0x68: accel=(1, 2, 3) temp_raw=4 gyro=(5, 6, 7)\nraw_integrity_event seq=1 outcome=recovered retries=1\nraw_integrity_event seq=2 outcome=rejected\n",
+            &mut line_buf,
+        );
+        stats.record_line("raw_integrity_event seq=3 outcome=retry_error");
+        stats.record_line("raw_integrity_event seq=4 outcome=accepted");
+        stats.record_sample();
+
+        assert_eq!(stats.total, 2);
+        assert_eq!(stats.clean(), 0);
+        assert_eq!(stats.suspicious(), 4);
+        assert_eq!(
+            stats.summary_line(),
+            "integrity_stats samples=2 clean_samples=0 suspicious_events=4 recovered=1 rejected=1 retry_error=1 accepted=1"
+        );
+    }
+
+    #[test]
+    fn integrity_stats_buffers_partial_lines_until_newline() {
+        let mut stats = IntegrityStats::default();
+        let mut line_buf = String::new();
+
+        stats.record_text(
+            "RAW 0x68: accel=(1, 2, 3) temp_raw=4 gyro=(5, 6, 7)",
+            &mut line_buf,
+        );
+        assert_eq!(stats.total, 0);
+        assert!(!line_buf.is_empty());
+
+        stats.record_text(
+            " timestamp_us=100 sequence=7 timestamp_source=device_instant\r\nraw_integrity_event seq=7 outcome=recovered retries=1\r\n",
+            &mut line_buf,
+        );
+        assert_eq!(line_buf, "");
+        assert_eq!(stats.total, 1);
+        assert_eq!(stats.recovered, 1);
+        assert_eq!(stats.clean(), 0);
+    }
+
+    #[test]
+    fn integrity_stats_counts_trimmed_final_partial_line() {
+        let mut stats = IntegrityStats::default();
+        let line_buf = "RAW 0x68: accel=(1, 2, 3) temp_raw=4 gyro=(5, 6, 7)   ";
+
+        record_partial_text_line(&mut stats, line_buf);
+
+        assert_eq!(stats.total, 1);
+        assert_eq!(stats.clean(), 1);
+    }
+
+    #[test]
+    fn integrity_stats_ignores_unknown_outcomes_and_saturates_clean() {
+        let mut stats = IntegrityStats::default();
+        stats.record_sample();
+        stats.record_line("raw_integrity_event seq=1 outcome=recovered retries=1");
+        stats.record_line("raw_integrity_event seq=2 outcome=rejected retries=1");
+        stats.record_line("raw_integrity_event seq=3 outcome=weird retries=1");
+
+        assert_eq!(stats.total, 1);
+        assert_eq!(stats.suspicious(), 2);
+        assert_eq!(stats.clean(), 0);
+        assert_eq!(
+            stats.summary_line(),
+            "integrity_stats samples=1 clean_samples=0 suspicious_events=2 recovered=1 rejected=1 retry_error=0 accepted=0"
+        );
+    }
+
+    #[test]
+    fn integrity_stats_rejected_and_retry_error_do_not_reduce_clean_samples() {
+        let mut stats = IntegrityStats::default();
+        stats.record_sample();
+        stats.record_sample();
+        stats.record_line("raw_integrity_event seq=1 outcome=rejected retries=1");
+        stats.record_line("raw_integrity_event seq=2 outcome=retry_error retries=1");
+
+        assert_eq!(stats.suspicious(), 2);
+        assert_eq!(stats.clean(), 2);
+        assert_eq!(
+            stats.summary_line(),
+            "integrity_stats samples=2 clean_samples=2 suspicious_events=2 recovered=0 rejected=1 retry_error=1 accepted=0"
+        );
     }
 
     #[test]

@@ -111,6 +111,17 @@ struct VerificationEvidence {
     raw_block_readable: bool,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct RawIntegrityStats {
+    total_reads: u64,
+    clean: u64,
+    suspicious_first: u64,
+    recovered_by_retry: u64,
+    rejected_suspicious: u64,
+    accepted_suspicious: u64,
+    retry_error: u64,
+}
+
 impl VerificationEvidence {
     fn score(self) -> u8 {
         let mut score = 0;
@@ -266,8 +277,14 @@ fn main() -> ! {
         RAW_STREAM_PERIOD_MS
     );
     let mut raw_sequence: u64 = 0;
+    let mut integrity_stats = RawIntegrityStats::default();
     loop {
-        read_motion_sample_retry_once(&mut mpu, MPU_ADDR_AD0_LOW, &mut raw_sequence);
+        read_motion_sample_retry_once(
+            &mut mpu,
+            MPU_ADDR_AD0_LOW,
+            &mut raw_sequence,
+            &mut integrity_stats,
+        );
         delay.delay_millis(RAW_STREAM_PERIOD_MS);
     }
 }
@@ -538,22 +555,135 @@ fn log_verification_summary(probe: ProbeResult) {
     println!("verification_summary_end");
 }
 
-fn read_motion_sample_retry_once(mpu: &mut BoardMpu<'_>, address: u8, raw_sequence: &mut u64) {
+fn read_motion_sample_retry_once(
+    mpu: &mut BoardMpu<'_>,
+    address: u8,
+    raw_sequence: &mut u64,
+    integrity_stats: &mut RawIntegrityStats,
+) {
+    integrity_stats.total_reads = integrity_stats.total_reads.wrapping_add(1);
     match mpu.read_raw_with_retry(RawRetryPolicy::reject_after_retries(1)) {
-        Ok(RawReadOutcome::Clean { raw } | RawReadOutcome::Recovered { raw, .. }) => {
+        Ok(RawReadOutcome::Clean { raw }) => {
+            integrity_stats.clean = integrity_stats.clean.wrapping_add(1);
             emit_motion_sample(address, raw_sequence, raw);
         }
-        Ok(RawReadOutcome::RejectedSuspicious { raw, .. }) => {
+        Ok(RawReadOutcome::Recovered {
+            raw,
+            first_suspicion,
+            retries,
+        }) => {
+            integrity_stats.suspicious_first = integrity_stats.suspicious_first.wrapping_add(1);
+            integrity_stats.recovered_by_retry = integrity_stats.recovered_by_retry.wrapping_add(1);
+            #[cfg(feature = "binary-frames")]
+            let _ = (&first_suspicion, retries);
+            #[cfg(not(feature = "binary-frames"))]
+            println!(
+                "RAW 0x{:02x}: suspicious sample recovered by retry sequence={}",
+                address, *raw_sequence
+            );
+            #[cfg(not(feature = "binary-frames"))]
+            {
+                emit_raw_integrity_event(
+                    *raw_sequence,
+                    "recovered",
+                    retries,
+                    first_suspicion,
+                    integrity_stats,
+                );
+            }
+            emit_motion_sample(address, raw_sequence, raw);
+        }
+        Ok(RawReadOutcome::RejectedSuspicious {
+            raw,
+            suspicion,
+            retries,
+        }) => {
+            integrity_stats.suspicious_first = integrity_stats.suspicious_first.wrapping_add(1);
+            integrity_stats.rejected_suspicious =
+                integrity_stats.rejected_suspicious.wrapping_add(1);
+            #[cfg(feature = "binary-frames")]
+            let _ = (&suspicion, retries);
+            #[cfg(not(feature = "binary-frames"))]
+            {
+                emit_raw_integrity_event(
+                    *raw_sequence,
+                    "rejected",
+                    retries,
+                    suspicion,
+                    integrity_stats,
+                );
+            }
             log_suspicious_sample("retry_suspicious_skipped", address, *raw_sequence, raw)
         }
-        Ok(RawReadOutcome::RetryError { error, .. }) => println!(
-            "RAW 0x{:02x}: suspicious sample retry failed: {:?}",
-            address, error
-        ),
-        Ok(RawReadOutcome::AcceptedSuspicious { raw, .. }) => {
+        Ok(RawReadOutcome::RetryError {
+            first_suspicion,
+            retries,
+            error,
+            ..
+        }) => {
+            integrity_stats.suspicious_first = integrity_stats.suspicious_first.wrapping_add(1);
+            integrity_stats.retry_error = integrity_stats.retry_error.wrapping_add(1);
+            #[cfg(feature = "binary-frames")]
+            let _ = (&first_suspicion, retries);
+            #[cfg(not(feature = "binary-frames"))]
+            {
+                emit_raw_integrity_event(
+                    *raw_sequence,
+                    "retry_error",
+                    retries,
+                    first_suspicion,
+                    integrity_stats,
+                );
+            }
+            println!(
+                "RAW 0x{:02x}: suspicious sample retry failed: {:?}",
+                address, error
+            )
+        }
+        Ok(RawReadOutcome::AcceptedSuspicious {
+            raw,
+            suspicion,
+            retries,
+        }) => {
+            integrity_stats.suspicious_first = integrity_stats.suspicious_first.wrapping_add(1);
+            integrity_stats.accepted_suspicious =
+                integrity_stats.accepted_suspicious.wrapping_add(1);
+            #[cfg(feature = "binary-frames")]
+            let _ = (&suspicion, retries);
+            #[cfg(not(feature = "binary-frames"))]
+            {
+                emit_raw_integrity_event(
+                    *raw_sequence,
+                    "accepted",
+                    retries,
+                    suspicion,
+                    integrity_stats,
+                );
+            }
             emit_motion_sample(address, raw_sequence, raw)
         }
         Err(error) => println!("RAW 0x{:02x}: read failed: {:?}", address, error),
+    }
+}
+
+#[cfg(not(feature = "binary-frames"))]
+fn emit_raw_integrity_event(
+    sequence: u64,
+    outcome: &str,
+    retries: usize,
+    suspicion: impl fmt::Debug,
+    stats: &RawIntegrityStats,
+) {
+    if stats.accepted_suspicious == 0 {
+        println!(
+            "raw_integrity_event seq={} outcome={} reason={:?} retries={}",
+            sequence, outcome, suspicion, retries
+        );
+    } else {
+        println!(
+            "raw_integrity_event seq={} outcome={} reason={:?} retries={} accepted_total={}",
+            sequence, outcome, suspicion, retries, stats.accepted_suspicious
+        );
     }
 }
 
