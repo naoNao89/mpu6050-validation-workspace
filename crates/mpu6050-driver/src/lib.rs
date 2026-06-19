@@ -341,14 +341,12 @@ where
             .write_read(self.address.as_u8(), &[registers::FIFO_COUNTH], &mut bytes)?;
         Ok(u16::from_be_bytes(bytes))
     }
-    fn read_fifo_byte(&mut self) -> Result<u8, I2C::Error> {
-        self.read_register(registers::FIFO_R_W)
-    }
     pub fn read_fifo_bytes(&mut self, bytes: &mut [u8]) -> Result<(), I2C::Error> {
-        for byte in bytes {
-            *byte = self.read_fifo_byte()?;
+        if bytes.is_empty() {
+            return Ok(());
         }
-        Ok(())
+        self.i2c
+            .write_read(self.address.as_u8(), &[registers::FIFO_R_W], bytes)
     }
     pub fn enable_data_ready_interrupt(&mut self) -> Result<(), I2C::Error> {
         self.write_masked(
@@ -569,10 +567,86 @@ mod tests {
         }
     }
 
+    struct FifoFakeI2c {
+        fifo_bytes: VecDeque<u8>,
+        fifo_rw_calls: usize,
+    }
+
+    impl FifoFakeI2c {
+        fn new(fifo_bytes: Vec<u8>) -> Self {
+            Self {
+                fifo_bytes: fifo_bytes.into(),
+                fifo_rw_calls: 0,
+            }
+        }
+    }
+
+    impl ErrorType for FifoFakeI2c {
+        type Error = FakeError;
+    }
+
+    impl I2c for FifoFakeI2c {
+        fn read(&mut self, _address: SevenBitAddress, _read: &mut [u8]) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn write(&mut self, _address: SevenBitAddress, _write: &[u8]) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn write_read(
+            &mut self,
+            _address: SevenBitAddress,
+            write: &[u8],
+            read: &mut [u8],
+        ) -> Result<(), Self::Error> {
+            assert_eq!(write, &[registers::FIFO_R_W]);
+            self.fifo_rw_calls += 1;
+            for byte in read {
+                *byte = self.fifo_bytes.pop_front().expect("missing FIFO byte");
+            }
+            Ok(())
+        }
+
+        fn transaction(
+            &mut self,
+            _address: SevenBitAddress,
+            _operations: &mut [Operation<'_>],
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn address_values_match_ad0_pin_state() {
         assert_eq!(Address::Ad0Low.as_u8(), 0x68);
         assert_eq!(Address::Ad0High.as_u8(), 0x69);
+    }
+
+    #[test]
+    fn fifo_burst_read_uses_single_transaction() {
+        const FIFO_TEST_BYTES: usize = 12;
+        const FIFO_TEST_FILL_BYTE: u8 = 0xA5;
+
+        let fake = FifoFakeI2c::new(std::vec![FIFO_TEST_FILL_BYTE; FIFO_TEST_BYTES]);
+        let mut mpu = Mpu6050::new(fake, Address::Ad0Low);
+        let mut buf = [0_u8; FIFO_TEST_BYTES];
+
+        mpu.read_fifo_bytes(&mut buf).unwrap();
+
+        assert_eq!(buf, [FIFO_TEST_FILL_BYTE; FIFO_TEST_BYTES]);
+        assert_eq!(mpu.release().fifo_rw_calls, 1);
+    }
+
+    #[test]
+    fn fifo_zero_length_read_uses_no_transaction() {
+        let fake = FifoFakeI2c::new(std::vec![]);
+        let mut mpu = Mpu6050::new(fake, Address::Ad0Low);
+        let mut buf = [];
+
+        mpu.read_fifo_bytes(&mut buf).unwrap();
+
+        assert_eq!(mpu.release().fifo_rw_calls, 0);
     }
 
     #[test]
