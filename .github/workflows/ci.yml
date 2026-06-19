@@ -57,15 +57,30 @@ jobs:
           cargo run --locked -p imu-tool -- sixface-analyze tools/imu-tool/tests/fixtures/sixface.log --mapping config/sixface-mapping.example.json || test $? -eq 1
 
   embedded:
-    name: esp32-c3 firmware checks
+    name: firmware size budget CI
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: Embedded build check
+      - name: ESP32-C3 firmware check
         run: cargo check --locked -p mpu6050-esp32c3-bringup --target riscv32imc-unknown-none-elf
-      - name: Embedded core no_std check
+      - name: imu-core no_std RISC-V check
         run: cargo check --locked -p imu-core --no-default-features --target riscv32imc-unknown-none-elf
+      - name: Install cargo-binutils
+        run: cargo install cargo-binutils
+      - name: ESP32-C3 release firmware build
+        run: env -u RUSTFLAGS cargo build --locked -p mpu6050-esp32c3-bringup --release --target riscv32imc-unknown-none-elf
+      - name: Firmware size budget profiles
+        run: |
+          for profile in esp32-c3-ci esp32-c3 esp32-c6 esp32-h2 esp32-p4 esp32-s3; do
+            echo "::group::firmware size budget (${profile})"
+            FIRMWARE_BUDGET_PROFILE="${profile}" scripts/check-firmware-budget.sh target/riscv32imc-unknown-none-elf/release/mpu6050-esp32c3-bringup
+            echo "::endgroup::"
+          done
+      - name: ESP32-C3 largest firmware symbols
+        run: rust-nm --size-sort --print-size target/riscv32imc-unknown-none-elf/release/mpu6050-esp32c3-bringup | tail -50

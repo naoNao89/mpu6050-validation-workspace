@@ -1,5 +1,24 @@
 # MPU6050 driver and validation workspace
 
+<table>
+<tr>
+<td align="center">
+<a href="https://github.com/naoNao89/mpu6050-drivers/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/naoNao89/mpu6050-drivers/ci.yml?branch=main&label=CI&logo=github" /></a>
+<a href="crates/mpu6050-driver/Cargo.toml"><img alt="crate version" src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FnaoNao89%2Fmpu6050-drivers%2Fmain%2Fcrates%2Fmpu6050-driver%2FCargo.toml&query=package.version&label=crate&prefix=v&logo=rust" /></a>
+</td>
+<td align="center"><a href="https://github.com/naoNao89/mpu6050-drivers/actions/workflows/ci.yml"><img alt="ESP32-C3 firmware size" src="https://img.shields.io/static/v1?label=ESP32-C3&message=flash%2057K%2F2M%20%7C%20RAM%202.2K%2F400K&color=green" /></a></td>
+<td align="center"><a href="https://github.com/naoNao89/mpu6050-drivers/actions/workflows/ci.yml"><img alt="ESP32-C6 firmware size" src="https://img.shields.io/static/v1?label=ESP32-C6&message=flash%2057K%2F4M%20%7C%20RAM%202.2K%2F512K&color=green" /></a></td>
+</tr>
+<tr>
+<td align="center"><a href="https://github.com/naoNao89/mpu6050-drivers/actions/workflows/ci.yml"><img alt="ESP32-H2 firmware size" src="https://img.shields.io/static/v1?label=ESP32-H2&message=flash%2057K%2F4M%20%7C%20RAM%202.2K%2F320K&color=green" /></a></td>
+<td align="center"><a href="https://github.com/naoNao89/mpu6050-drivers/actions/workflows/ci.yml"><img alt="ESP32-P4 firmware size" src="https://img.shields.io/static/v1?label=ESP32-P4&message=flash%2057K%2F8M%20%7C%20RAM%202.2K%2F512K&color=green" /></a></td>
+<td align="center"><a href="https://github.com/naoNao89/mpu6050-drivers/actions/workflows/ci.yml"><img alt="ESP32-S3 firmware size" src="https://img.shields.io/static/v1?label=ESP32-S3&message=flash%2057K%2F4M%20%7C%20RAM%202.2K%2F512K&color=green" /></a></td>
+</tr>
+</table>
+
+Firmware size badges are CI budget estimates only; they do not imply runtime or
+chip compatibility.
+
 Rust workspace for bringing up MPU6050-class IMUs, collecting real sensor logs,
 and validating driver behavior with repeatable host-side analysis.
 
