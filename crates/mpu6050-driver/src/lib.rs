@@ -107,6 +107,9 @@ impl IntStatus {
     }
 }
 
+// FIFO_EN, Register 35: XG/YG/ZG bits[6:4] plus ACCEL bit[3].
+// Temperature FIFO bit[7] is intentionally omitted so each FIFO motion frame is
+// 6 axes * 2 bytes = 12 bytes.
 const FIFO_SOURCES_ACCEL_XYZ_GYRO_XYZ: u8 = (1 << 6) | (1 << 5) | (1 << 4) | (1 << 3);
 
 pub const ACCEL_LSB_PER_G_2G: f64 = 16_384.0;

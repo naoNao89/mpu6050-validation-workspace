@@ -415,8 +415,8 @@ fn validate_fifo_timing(mpu: &mut BoardMpu<'_>, delay: &Delay, _address: u8) {
     let enable_sources_ok = mpu.enable_motion_fifo().is_ok();
     let enable_fifo_ok = mpu.enable_fifo().is_ok();
     let count0 = mpu.fifo_count().ok();
-    delay.delay_millis(250);
-    let count1 = mpu.fifo_count().ok();
+    delay.delay_millis(2);
+    let count1 = mpu.fifo_count().ok().or(count0);
     let mut frame_read_ok = false;
     if let Some(count) = count1 {
         if count >= FIFO_ACCEL_GYRO_FRAME_BYTES {
