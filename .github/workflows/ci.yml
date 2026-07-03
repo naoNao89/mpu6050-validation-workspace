@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       external-board-check:
-        description: "Run ESP32-C3 external consumer firmware checks (requires published mpu6050-driver)"
+        description: "Run ESP32-C3 external consumer firmware checks"
         required: false
         type: boolean
         default: false
@@ -75,11 +75,11 @@ jobs:
         with:
           cache-on-failure: true
       - name: ESP32-C3 firmware check
-        run: cargo check --locked --manifest-path boards/esp32-c3/Cargo.toml --target riscv32imc-unknown-none-elf
+        run: CARGO_TARGET_DIR=target cargo --config 'patch.crates-io.mpu6050-driver.path="crates/mpu6050-driver"' check --locked --manifest-path boards/esp32-c3/Cargo.toml --target riscv32imc-unknown-none-elf
       - name: Install cargo-binutils
         run: cargo install cargo-binutils
       - name: ESP32-C3 release firmware build
-        run: env -u RUSTFLAGS cargo build --locked --manifest-path boards/esp32-c3/Cargo.toml --release --target riscv32imc-unknown-none-elf
+        run: env -u RUSTFLAGS CARGO_TARGET_DIR=target cargo --config 'patch.crates-io.mpu6050-driver.path="crates/mpu6050-driver"' build --locked --manifest-path boards/esp32-c3/Cargo.toml --release --target riscv32imc-unknown-none-elf
       - name: Firmware size budget profiles
         run: |
           for profile in esp32-c3-ci esp32-c3 esp32-c6 esp32-h2 esp32-p4 esp32-s3; do
