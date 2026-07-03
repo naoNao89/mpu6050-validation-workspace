@@ -9,7 +9,6 @@ on:
         type: choice
         options:
           - mpu6050-driver
-          - imu-validation
           - imu-tool
 
 jobs:

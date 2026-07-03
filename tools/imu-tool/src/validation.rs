@@ -9,6 +9,7 @@ pub struct ImuSample {
 }
 
 impl ImuSample {
+    #[allow(dead_code)]
     pub fn from_g_dps(accel_g: [f64; 3], gyro_dps: [f64; 3]) -> Self {
         Self {
             accel_g,
@@ -18,6 +19,7 @@ impl ImuSample {
         }
     }
 
+    #[allow(dead_code)]
     pub fn from_si(accel_mps2: [f64; 3], gyro_radps: [f64; 3]) -> Self {
         const STANDARD_GRAVITY_MPS2: f64 = 9.80665;
         Self::from_g_dps(
@@ -26,6 +28,7 @@ impl ImuSample {
         )
     }
 
+    #[allow(dead_code)]
     pub fn new(accel_g: [f64; 3], gyro_dps: [f64; 3]) -> Self {
         Self::from_g_dps(accel_g, gyro_dps)
     }
@@ -70,12 +73,14 @@ impl Default for GyroCalibration {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct ImuCalibration {
     pub accel: AccelCalibration,
     pub gyro: GyroCalibration,
 }
 
 impl ImuCalibration {
+    #[allow(dead_code)]
     pub const fn identity() -> Self {
         Self {
             accel: AccelCalibration::identity(),
@@ -83,6 +88,7 @@ impl ImuCalibration {
         }
     }
 
+    #[allow(dead_code)]
     pub fn apply(&self, sample: &ImuSample) -> ImuSample {
         let mut accel_g = sample.accel_g;
         let mut gyro_dps = sample.gyro_dps;
@@ -1072,6 +1078,7 @@ pub enum VerdictStatus {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[allow(dead_code)]
 pub struct AxisStats {
     pub mean: Option<f64>,
     pub std: Option<f64>,
@@ -1709,7 +1716,7 @@ mod tests {
 
     #[test]
     fn sixface_synthetic_recovers_offset_and_scale() {
-        use crate::spec::*;
+        use super::spec::*;
         let offsets = [0.02, -0.03, 0.04];
         let scales = [1.01, 0.98, 1.05];
         let faces = [
@@ -1757,7 +1764,7 @@ mod tests {
 
     #[test]
     fn sixface_missing_face_is_insufficient_data() {
-        use crate::spec::*;
+        use super::spec::*;
         let samples = vec![FaceAccelSamples {
             face: SignedAxis::PosX,
             accel_g: vec![[1.0, 0.0, 0.0]; 3],
@@ -1776,7 +1783,7 @@ mod tests {
 
     #[test]
     fn sixface_json_contains_compliance_and_unsupported() {
-        use crate::spec::*;
+        use super::spec::*;
         let r = analyze_sixface_accel(
             &[],
             &SixFaceAccelConfig {
@@ -1794,7 +1801,7 @@ mod tests {
 
     #[test]
     fn sixface_mislabeled_face_data_does_not_pass() {
-        use crate::spec::*;
+        use super::spec::*;
         let samples = vec![
             FaceAccelSamples {
                 face: SignedAxis::PosX,
@@ -1829,7 +1836,7 @@ mod tests {
 
     #[test]
     fn sixface_same_orientation_scale_near_zero_fails() {
-        use crate::spec::*;
+        use super::spec::*;
         let samples = vec![
             FaceAccelSamples {
                 face: SignedAxis::PosX,
@@ -1863,7 +1870,7 @@ mod tests {
 
     #[test]
     fn sixface_one_sample_per_face_insufficient_by_default() {
-        use crate::spec::*;
+        use super::spec::*;
         let samples = vec![
             FaceAccelSamples {
                 face: SignedAxis::PosX,
@@ -1896,7 +1903,7 @@ mod tests {
 
     #[test]
     fn sixface_invalid_config_and_nonfinite_samples_are_json_safe() {
-        use crate::spec::*;
+        use super::spec::*;
         let samples = vec![FaceAccelSamples {
             face: SignedAxis::PosX,
             accel_g: vec![[f64::NAN, f64::INFINITY, 0.0], [1.0, 0.0, 0.0]],
@@ -1932,7 +1939,7 @@ mod tests {
 
     #[test]
     fn allan_constant_sequence_zero_and_no_white_noise_fit() {
-        use crate::noise::*;
+        use super::noise::*;
         let cfg = AllanConfig {
             tau0_s: 0.01,
             timing_source: TimingSource::TrustedTimestamps,
@@ -1952,7 +1959,7 @@ mod tests {
 
     #[test]
     fn allan_invalid_inputs_are_json_safe() {
-        use crate::noise::*;
+        use super::noise::*;
         let report = allan_overlapping(
             &[1.0, f64::NAN, 2.0],
             "dps",
@@ -1977,7 +1984,7 @@ mod tests {
 
     #[test]
     fn allan_white_noise_slope_and_coefficient_are_finite() {
-        use crate::noise::*;
+        use super::noise::*;
         let samples = white_noise(4096);
         let report = allan_overlapping(
             &samples,
@@ -2000,7 +2007,7 @@ mod tests {
 
     #[test]
     fn psd_white_noise_floor_is_finite() {
-        use crate::noise::*;
+        use super::noise::*;
         let samples = white_noise(512);
         let report = estimate_psd_floor(
             &samples,
@@ -2022,7 +2029,7 @@ mod tests {
 
     #[test]
     fn psd_invalid_rate_or_band_unavailable() {
-        use crate::noise::*;
+        use super::noise::*;
         let samples = white_noise(32);
         let bad_rate = estimate_psd_floor(
             &samples,
@@ -2066,8 +2073,8 @@ mod tests {
         }
     }
 
-    fn noise_timing_cfg(rate: f64) -> crate::noise::NoiseTimingConfig {
-        crate::noise::NoiseTimingConfig {
+    fn noise_timing_cfg(rate: f64) -> super::noise::NoiseTimingConfig {
+        super::noise::NoiseTimingConfig {
             nominal_rate_hz: Some(rate),
             observed_rate_tolerance_fraction: 0.05,
             jitter_ratio_max: 0.05,
@@ -2076,7 +2083,7 @@ mod tests {
 
     #[test]
     fn noise_timing_decision_preserves_trust_semantics() {
-        use crate::noise::*;
+        use super::noise::*;
         let no_timestamps = vec![timed_noise_sample(None, None); 5];
         let d = decide_noise_timing(&no_timestamps, &noise_timing_cfg(10.0));
         assert_eq!(d.timing_source, TimingSource::NominalRateAssumed);
@@ -2151,7 +2158,7 @@ mod tests {
 
     #[test]
     fn analyze_imu_noise_serializes_expected_shape_and_psd_optional() {
-        use crate::noise::*;
+        use super::noise::*;
         let samples: Vec<_> = (0..32)
             .map(|i| timed_noise_sample(Some(i as f64 * 0.01), Some(i)))
             .collect();

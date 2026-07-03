@@ -8,6 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod validation;
+use crate::validation as imu_validation;
+
 const ACCEL: f64 = 16384.0;
 const GYRO: f64 = 131.0;
 const FACES: [&str; 6] = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"];

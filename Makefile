@@ -75,7 +75,7 @@ check: fmt check-host
 
 check-host:
 	cargo fmt --all -- --check
-	cargo check --locked -p imu-validation -p imu-tool -p mpu6050-driver --all-targets --all-features
+	cargo check --locked -p imu-tool -p mpu6050-driver --all-targets --all-features
 
 check-firmware:
 	cargo fmt --all -- --check
@@ -83,10 +83,10 @@ check-firmware:
 
 test:
 	cargo test --locked -p mpu6050-driver
-	cargo test --locked -p imu-validation -p imu-tool -p mpu6050-driver --all-features
+	cargo test --locked -p imu-tool -p mpu6050-driver --all-features
 
 clippy:
-	cargo clippy --locked -p imu-validation -p imu-tool -p mpu6050-driver --all-targets --all-features -- -D warnings
+	cargo clippy --locked -p imu-tool -p mpu6050-driver --all-targets --all-features -- -D warnings
 
 build:
 	env -u RUSTFLAGS CARGO_TARGET_DIR=target cargo --config '$(BOARD_DRIVER_PATCH)' build --manifest-path boards/esp32-c3/Cargo.toml --release --target $(TARGET)

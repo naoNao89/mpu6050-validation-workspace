@@ -255,18 +255,10 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "clap",
- "imu-validation",
  "regex",
- "serde_json",
- "serialport",
-]
-
-[[package]]
-name = "imu-validation"
-version = "0.1.0"
-dependencies = [
  "serde",
  "serde_json",
+ "serialport",
 ]
 
 [[package]]
