@@ -1,6 +1,7 @@
 PORT ?=
 BAUD ?= 115200
 TARGET ?= riscv32imc-unknown-none-elf
+BOARD_DRIVER_PATCH := patch.crates-io.mpu6050-driver.path="crates/mpu6050-driver"
 LOG_DIR ?= logs
 LOG_FILE ?=
 DURATION ?=
@@ -38,7 +39,7 @@ help:
 	@printf '%s\n' ''
 	@printf '%s\n' 'Core:'
 	@printf '%s\n' '  make fmt                         Format all Rust crates'
-	@printf '%s\n' '  make check                       Run format, host checks, and firmware checks'
+	@printf '%s\n' '  make check                       Run format and host checks'
 	@printf '%s\n' '  make check-host                  Run host-side package checks'
 	@printf '%s\n' '  make check-firmware              Run ESP32-C3 firmware target checks'
 	@printf '%s\n' '  make test                        Run host-side tests'
@@ -70,7 +71,7 @@ help:
 fmt:
 	cargo fmt --all
 
-check: fmt check-host check-firmware
+check: fmt check-host
 
 check-host:
 	cargo fmt --all -- --check
@@ -78,7 +79,7 @@ check-host:
 
 check-firmware:
 	cargo fmt --all -- --check
-	env -u RUSTFLAGS cargo check --locked -p mpu6050-esp32c3-bringup --target $(TARGET)
+	env -u RUSTFLAGS CARGO_TARGET_DIR=target cargo --config '$(BOARD_DRIVER_PATCH)' check --locked --manifest-path boards/esp32-c3/Cargo.toml --target $(TARGET)
 
 test:
 	cargo test --locked -p mpu6050-driver
@@ -88,7 +89,7 @@ clippy:
 	cargo clippy --locked -p imu-validation -p imu-tool -p mpu6050-driver --all-targets --all-features -- -D warnings
 
 build:
-	env -u RUSTFLAGS cargo build -p mpu6050-esp32c3-bringup --release --target $(TARGET)
+	env -u RUSTFLAGS CARGO_TARGET_DIR=target cargo --config '$(BOARD_DRIVER_PATCH)' build --manifest-path boards/esp32-c3/Cargo.toml --release --target $(TARGET)
 
 flash: build
 	PORT="$(PORT)" ./scripts/esp-port.sh sh -c 'env -u RUSTFLAGS espflash flash --port "$$ESP_PORT" "$(BIN)"'

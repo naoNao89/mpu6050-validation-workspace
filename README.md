@@ -86,7 +86,10 @@ make check-host
 make check-firmware
 ```
 
-Use `make check` to run formatting, host checks, and firmware checks together.
+Use `make check` to run formatting and host checks. Use `make check-firmware`
+for the ESP32-C3 external-consumer firmware check; it keeps the board outside
+the workspace and uses an explicit local override until `mpu6050-driver` is
+published.
 
 ## Independent validation workflow
 

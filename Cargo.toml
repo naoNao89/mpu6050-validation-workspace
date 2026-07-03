@@ -5,11 +5,11 @@ default-members = [
     "crates/imu-validation",
 ]
 members = [
-    "boards/esp32-c3",
     "tools/imu-tool",
     "crates/mpu6050-driver",
     "crates/imu-validation",
 ]
+exclude = ["boards/esp32-c3"]
 resolver = "3"
 
 [profile.dev]
