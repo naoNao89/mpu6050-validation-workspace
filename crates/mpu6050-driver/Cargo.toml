@@ -3,6 +3,8 @@ name = "mpu6050-driver"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+description = "no_std embedded-hal driver for the MPU-6050 IMU"
+repository = "https://github.com/naoNao89/mpu6050-drivers"
 
 [dependencies]
 embedded-hal = "1.0"
