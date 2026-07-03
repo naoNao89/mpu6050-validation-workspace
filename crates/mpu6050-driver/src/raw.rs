@@ -1,5 +1,4 @@
 use embedded_hal::i2c::I2c;
-use imu_core::ImuSample;
 
 use crate::{Mpu6050, registers};
 
@@ -7,6 +6,37 @@ pub const ACCEL_LSB_PER_G_2G: f64 = 16_384.0;
 pub const GYRO_LSB_PER_DPS_250DPS: f64 = 131.0;
 pub const TEMP_LSB_PER_DEG_C: f64 = 340.0;
 pub const TEMP_OFFSET_DEG_C: f64 = 36.53;
+
+#[derive(Clone, Debug)]
+pub struct ImuSample {
+    pub accel_g: [f64; 3],
+    pub gyro_dps: [f64; 3],
+    pub timestamp_s: Option<f64>,
+    pub sequence: Option<u64>,
+}
+
+impl ImuSample {
+    pub fn from_g_dps(accel_g: [f64; 3], gyro_dps: [f64; 3]) -> Self {
+        Self {
+            accel_g,
+            gyro_dps,
+            timestamp_s: None,
+            sequence: None,
+        }
+    }
+
+    pub fn from_si(accel_mps2: [f64; 3], gyro_radps: [f64; 3]) -> Self {
+        const STANDARD_GRAVITY_MPS2: f64 = 9.80665;
+        Self::from_g_dps(
+            accel_mps2.map(|v| v / STANDARD_GRAVITY_MPS2),
+            gyro_radps.map(f64::to_degrees),
+        )
+    }
+
+    pub fn new(accel_g: [f64; 3], gyro_dps: [f64; 3]) -> Self {
+        Self::from_g_dps(accel_g, gyro_dps)
+    }
+}
 
 /// Raw accel/temp/gyro register block read from ACCEL_XOUT_H.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -1,14 +1,12 @@
 [workspace]
 default-members = [
     "tools/imu-tool",
-    "crates/imu-core",
     "crates/mpu6050-driver",
     "crates/imu-validation",
 ]
 members = [
     "boards/esp32-c3",
     "tools/imu-tool",
-    "crates/imu-core",
     "crates/mpu6050-driver",
     "crates/imu-validation",
 ]
