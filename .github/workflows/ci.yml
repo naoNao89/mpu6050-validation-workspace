@@ -46,6 +46,11 @@ jobs:
         run: cargo check --locked -p imu-core --no-default-features
       - name: Driver tests
         run: cargo test --locked -p mpu6050-driver
+      - name: Reusable crate package checks
+        run: |
+          cargo package --locked -p imu-core --allow-dirty --no-verify
+          cargo package --locked -p mpu6050-driver --allow-dirty --list
+          cargo package --locked -p imu-validation --allow-dirty --list
       - name: Host tests
         run: cargo test --locked -p imu-core -p imu-validation -p imu-tool -p mpu6050-driver --all-features
       - name: Host clippy

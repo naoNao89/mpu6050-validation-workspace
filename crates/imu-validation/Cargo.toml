@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-imu-core = { path = "../imu-core", features = ["serde"] }
+imu-core = { version = "0.1.0", path = "../imu-core", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]

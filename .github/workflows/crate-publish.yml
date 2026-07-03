@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - imu-core
+          - mpu6050-driver
           - imu-validation
           - imu-tool
 

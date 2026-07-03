@@ -6,4 +6,4 @@ license = "MIT"
 
 [dependencies]
 embedded-hal = "1.0"
-imu-core = { path = "../imu-core" }
+imu-core = { version = "0.1.0", path = "../imu-core" }
