@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      external-board-check:
+        description: "Run ESP32-C3 external consumer firmware checks (requires published mpu6050-driver)"
+        required: false
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -58,6 +64,7 @@ jobs:
 
   embedded:
     name: firmware size budget CI
+    if: github.event_name == 'workflow_dispatch' && inputs.external-board-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -68,11 +75,11 @@ jobs:
         with:
           cache-on-failure: true
       - name: ESP32-C3 firmware check
-        run: cargo check --locked -p mpu6050-esp32c3-bringup --target riscv32imc-unknown-none-elf
+        run: cargo check --locked --manifest-path boards/esp32-c3/Cargo.toml --target riscv32imc-unknown-none-elf
       - name: Install cargo-binutils
         run: cargo install cargo-binutils
       - name: ESP32-C3 release firmware build
-        run: env -u RUSTFLAGS cargo build --locked -p mpu6050-esp32c3-bringup --release --target riscv32imc-unknown-none-elf
+        run: env -u RUSTFLAGS cargo build --locked --manifest-path boards/esp32-c3/Cargo.toml --release --target riscv32imc-unknown-none-elf
       - name: Firmware size budget profiles
         run: |
           for profile in esp32-c3-ci esp32-c3 esp32-c6 esp32-h2 esp32-p4 esp32-s3; do

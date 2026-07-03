@@ -9,7 +9,7 @@ binary-frames = []
 
 [dependencies]
 log = "0.4.28"
-mpu6050-driver = { path = "../../crates/mpu6050-driver" }
+mpu6050-driver = "0.1.0"
 
 [target.'cfg(target_arch = "riscv32")'.dependencies]
 esp-backtrace = { version = "0.18.0", features = ["esp32c3", "panic-handler", "println"] }

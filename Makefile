@@ -70,7 +70,7 @@ help:
 fmt:
 	cargo fmt --all
 
-check: fmt check-host check-firmware
+check: fmt check-host
 
 check-host:
 	cargo fmt --all -- --check
@@ -78,7 +78,7 @@ check-host:
 
 check-firmware:
 	cargo fmt --all -- --check
-	env -u RUSTFLAGS cargo check --locked -p mpu6050-esp32c3-bringup --target $(TARGET)
+	env -u RUSTFLAGS cargo check --locked --manifest-path boards/esp32-c3/Cargo.toml --target $(TARGET)
 
 test:
 	cargo test --locked -p mpu6050-driver
@@ -88,7 +88,7 @@ clippy:
 	cargo clippy --locked -p imu-validation -p imu-tool -p mpu6050-driver --all-targets --all-features -- -D warnings
 
 build:
-	env -u RUSTFLAGS cargo build -p mpu6050-esp32c3-bringup --release --target $(TARGET)
+	env -u RUSTFLAGS cargo build --manifest-path boards/esp32-c3/Cargo.toml --release --target $(TARGET)
 
 flash: build
 	PORT="$(PORT)" ./scripts/esp-port.sh sh -c 'env -u RUSTFLAGS espflash flash --port "$$ESP_PORT" "$(BIN)"'
