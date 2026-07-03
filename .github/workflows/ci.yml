@@ -44,6 +44,8 @@ jobs:
         run: cargo check --locked -p imu-validation -p imu-tool -p mpu6050-driver --all-targets --all-features
       - name: Driver tests
         run: cargo test --locked -p mpu6050-driver
+      - name: Driver package dry run
+        run: cargo publish -p mpu6050-driver --dry-run --locked
       - name: Host tests
         run: cargo test --locked -p imu-validation -p imu-tool -p mpu6050-driver --all-features
       - name: Host clippy
