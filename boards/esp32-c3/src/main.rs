@@ -6,6 +6,13 @@
 fn main() {}
 
 use core::fmt;
+
+mod board;
+
+use board::{
+    AD0_PIN_NAME, BOARD_NAME, GND_PIN_NAME, I2C_BUS_NAME, I2C_FREQUENCY_KHZ, INT_PIN_NAME,
+    SCL_PIN_NAME, SDA_PIN_NAME, VCC_PIN_NAME, XCL_PIN_NAME, XDA_PIN_NAME,
+};
 #[cfg(target_arch = "riscv32")]
 use esp_backtrace as _;
 #[cfg(target_arch = "riscv32")]
@@ -39,20 +46,6 @@ const BINARY_FRAME_VERSION: u8 = 1;
 const BINARY_FRAME_PAYLOAD_LEN: u8 = 32;
 #[cfg(feature = "binary-frames")]
 const BINARY_FRAME_LEN: usize = 38;
-
-// Reference dev-board wiring used by this bring-up firmware.
-//
-// The repo's board-under-test is an ESP32-C3 SuperMini-class board connected to
-// a GY-521/MPU6050 module. Keep these constants aligned with the README so the
-// firmware is explicitly a board sample that exercises this MPU6050 driver
-// stack, rather than an anonymous ESP32-C3 snippet.
-const BOARD_NAME: &str = "ESP32-C3 SuperMini-class dev board";
-const I2C_BUS_NAME: &str = "I2C0";
-const I2C_FREQUENCY_KHZ: u32 = 100;
-const SCL_PIN_NAME: &str = "GPIO0";
-const SDA_PIN_NAME: &str = "GPIO1";
-const AD0_PIN_NAME: &str = "GPIO5";
-const INT_PIN_NAME: &str = "GPIO6";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentityVerdict {
@@ -227,8 +220,15 @@ fn main() -> ! {
     println!("MPU6050 ESP32-C3 esp-hal I2C bring-up started");
     println!("Board profile: {}", BOARD_NAME);
     println!(
-        "Wiring: VCC=3V GND=GND SCL={} SDA={} AD0={} INT={}",
-        SCL_PIN_NAME, SDA_PIN_NAME, AD0_PIN_NAME, INT_PIN_NAME
+        "Wiring: VCC={} GND={} SCL={} SDA={} XDA={} XCL={} AD0={} INT={}",
+        VCC_PIN_NAME,
+        GND_PIN_NAME,
+        SCL_PIN_NAME,
+        SDA_PIN_NAME,
+        XDA_PIN_NAME,
+        XCL_PIN_NAME,
+        AD0_PIN_NAME,
+        INT_PIN_NAME
     );
 
     let scl_probe = Input::new(
@@ -248,7 +248,10 @@ fn main() -> ! {
     drop(sda_probe);
 
     let _ad0 = Output::new(peripherals.GPIO5, Level::Low, OutputConfig::default());
-    println!("AD0 driven LOW on GPIO5; expected 7-bit address is 0x68");
+    println!(
+        "AD0 driven LOW on {}; expected 7-bit address is 0x68",
+        AD0_PIN_NAME
+    );
 
     let config = I2cConfig::default()
         .with_frequency(Rate::from_khz(I2C_FREQUENCY_KHZ))
