@@ -74,20 +74,18 @@ check: fmt check-host check-firmware
 
 check-host:
 	cargo fmt --all -- --check
-	cargo check --locked -p imu-core -p imu-validation -p imu-tool -p mpu6050-driver --all-targets --all-features
-	cargo check --locked -p imu-core --no-default-features
+	cargo check --locked -p imu-validation -p imu-tool -p mpu6050-driver --all-targets --all-features
 
 check-firmware:
 	cargo fmt --all -- --check
 	env -u RUSTFLAGS cargo check --locked -p mpu6050-esp32c3-bringup --target $(TARGET)
-	env -u RUSTFLAGS cargo check --locked -p imu-core --no-default-features --target $(TARGET)
 
 test:
 	cargo test --locked -p mpu6050-driver
-	cargo test --locked -p imu-core -p imu-validation -p imu-tool -p mpu6050-driver --all-features
+	cargo test --locked -p imu-validation -p imu-tool -p mpu6050-driver --all-features
 
 clippy:
-	cargo clippy --locked -p imu-core -p imu-validation -p imu-tool -p mpu6050-driver --all-targets --all-features -- -D warnings
+	cargo clippy --locked -p imu-validation -p imu-tool -p mpu6050-driver --all-targets --all-features -- -D warnings
 
 build:
 	env -u RUSTFLAGS cargo build -p mpu6050-esp32c3-bringup --release --target $(TARGET)
