@@ -1,0 +1,47 @@
+[package]
+name = "mpu6050-esp32p4-bringup"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace]
+
+[features]
+binary-frames = []
+# Minimal app-entry/HAL-init loop used to prove the P4 runtime boots.
+boot-probe = []
+# Low-side-effect I2C address probe: reads lines, toggles AD0, and attempts
+# WHO_AM_I at 0x68/0x69 without driver wake/raw streaming.
+i2c-probe = []
+# Software open-drain I2C ACK probe on SCL=GPIO20/SDA=GPIO21 to distinguish HAL
+# I2C/pinmux issues from hardware/module no-ACK.
+i2c-bitbang = []
+# I2C smoke test: initialize SCL=GPIO20/SDA=GPIO21, drive AD0 low, and probe
+# both MPU6050 addresses (0x68/0x69).
+mpu-smoke = []
+# GPIO continuity test for the fully wired module. Toggles GPIO20/21/22/23/26/27
+# in a logged sequence so a meter can confirm the signal reaches the MPU header.
+pin-wiggle = []
+
+[dependencies]
+log = "0.4.28"
+mpu6050-driver = "0.1.0"
+
+[target.'cfg(target_arch = "riscv32")'.dependencies]
+embedded-hal = "1.0"
+
+# Intentionally pinned to the tested downstream fork/pre-v3.0 silicon patch set.
+# This board profile targets ESP32-P4 rev v1.3 (pre-v3.0 / ECO2). The related
+# upstream esp-hal PR was closed unmerged, so this is not waiting for a crates.io
+# release; revalidate the exact silicon/config before changing this pin.
+
+esp-backtrace = { git = "https://github.com/hatomist/esp-hal", rev = "2460aa626b6291a2d5ea106afb841027daecb9dd", features = ["esp32p4", "panic-handler", "println"] }
+# espflash 4.x requires an ESP-IDF app descriptor in esp-hal applications.
+esp-bootloader-esp-idf = { git = "https://github.com/hatomist/esp-hal", rev = "2460aa626b6291a2d5ea106afb841027daecb9dd", features = ["esp32p4"] }
+esp-hal = { git = "https://github.com/hatomist/esp-hal", rev = "2460aa626b6291a2d5ea106afb841027daecb9dd", default-features = false, features = ["esp32p4", "rt", "unstable"] }
+# Use the UART backend explicitly; the default/auto backend selection is not
+# desirable while validating early P4 boot logs over the USB serial port.
+esp-println = { git = "https://github.com/hatomist/esp-hal", rev = "2460aa626b6291a2d5ea106afb841027daecb9dd", default-features = false, features = ["esp32p4", "log-04", "uart"] }
+
+[dev-dependencies]
+embedded-hal = "1.0"

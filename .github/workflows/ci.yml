@@ -56,11 +56,27 @@ jobs:
         run: cargo test --locked -p imu-tool -p mpu6050-driver --all-features
       - name: Host clippy
         run: cargo clippy --locked -p imu-tool -p mpu6050-driver --all-targets --all-features -- -D warnings
+      - name: P4 host unit tests
+        run: cargo test --locked --manifest-path boards/esp32-p4/Cargo.toml --config 'patch.crates-io.mpu6050-driver.path="crates/mpu6050-driver"'
       - name: Fixture smoke tests
         run: |
           cargo run --locked -p imu-tool -- analyze tools/imu-tool/tests/fixtures/stationary-60s.log --min-samples 20
           cargo run --locked -p imu-tool -- orientation-analyze tools/imu-tool/tests/fixtures/auto-orientation.log --min-samples-per-axis 3
           cargo run --locked -p imu-tool -- sixface-analyze tools/imu-tool/tests/fixtures/sixface.log --mapping config/sixface-mapping.example.json || test $? -eq 1
+
+  p4-firmware:
+    name: ESP32-P4 firmware checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: riscv32imafc-unknown-none-elf
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: ESP32-P4 firmware check
+        run: make check-firmware-p4
 
   embedded:
     name: firmware size budget CI
@@ -76,6 +92,11 @@ jobs:
           cache-on-failure: true
       - name: ESP32-C3 firmware check
         run: CARGO_TARGET_DIR=target cargo --config 'patch.crates-io.mpu6050-driver.path="crates/mpu6050-driver"' check --locked --manifest-path boards/esp32-c3/Cargo.toml --target riscv32imc-unknown-none-elf
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: riscv32imafc-unknown-none-elf
+      - name: ESP32-P4 firmware check
+        run: make check-firmware-p4
       - name: Install cargo-binutils
         run: cargo install cargo-binutils
       - name: ESP32-C3 release firmware build
