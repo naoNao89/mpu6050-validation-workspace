@@ -1,7 +1,14 @@
 PORT ?=
 BAUD ?= 115200
 TARGET ?= riscv32imc-unknown-none-elf
+P4_TARGET ?= riscv32imafc-unknown-none-elf
 BOARD_DRIVER_PATCH := patch.crates-io.mpu6050-driver.path="crates/mpu6050-driver"
+P4_RUSTFLAGS := -Clink-arg=-Tlinkall.x -Cforce-frame-pointers=yes
+P4_FEATURES ?= boot-probe
+P4_FEATURE_ARGS := $(if $(strip $(P4_FEATURES)),--features $(P4_FEATURES),)
+P4_CARGO ?= cargo +1.95.0
+P4_CHIP_REVISION ?= 100
+P4_ENV := ESP_HAL_CONFIG_MIN_CHIP_REVISION=$(P4_CHIP_REVISION) ESP_SYNC_CONFIG_MIN_CHIP_REVISION=$(P4_CHIP_REVISION) ESP_HAL_CONFIG_STACK_GUARD_MONITORING=false ESP_HAL_CONFIG_STACK_GUARD_MONITORING_WITH_DEBUGGER_CONNECTED=false
 LOG_DIR ?= logs
 LOG_FILE ?=
 DURATION ?=
@@ -29,10 +36,11 @@ MAPPING ?=
 CSV_FILE ?=
 OUT ?=
 BIN := target/$(TARGET)/release/mpu6050-esp32c3-bringup
+P4_BIN := target/$(P4_TARGET)/release/mpu6050-esp32p4-bringup
 
 .DEFAULT_GOAL := help
 
-.PHONY: help fmt check check-host check-firmware test clippy build flash monitor run clean capture analyze stationary-suite orientation-capture orientation-analyze sixface-capture sixface-analyze sixface-calibration export-csv allan psd smoke validate-stationary validate-orientation imu-tool-smoke
+.PHONY: help fmt check check-host check-firmware check-firmware-p4 test clippy build build-p4 build-p4-full flash flash-p4 monitor monitor-p4 run run-p4 clean capture analyze stationary-suite orientation-capture orientation-analyze sixface-capture sixface-analyze sixface-calibration export-csv allan psd smoke validate-stationary validate-orientation imu-tool-smoke
 
 help:
 	@printf '%s\n' 'MPU6050 driver workspace'
@@ -51,6 +59,19 @@ help:
 	@printf '%s\n' '  make monitor PORT=...            Monitor serial output'
 	@printf '%s\n' '  make monitor PORT=... DURATION=300 MODE=text|binary'
 	@printf '%s\n' '  make run PORT=... DURATION=300 MODE=text|binary'
+	@printf '%s\n' ''
+	@printf '%s\n' 'ESP32-P4:'
+	@printf '%s\n' '  Targets ESP32-P4 rev v1.3/ECO2/pre-v3.0 by default; set P4_CHIP_REVISION to match your silicon.'
+	@printf '%s\n' '  make check-firmware-p4             Check P4 firmware modes'
+	@printf '%s\n' '  make build-p4                      Build P4 boot-probe firmware (safe default)'
+	@printf '%s\n' '  make build-p4-full                 Build P4 default/full pipeline firmware'
+	@printf '%s\n' '  make build-p4 P4_FEATURES=         Build P4 default/full pipeline firmware'
+	@printf '%s\n' '  make build-p4 P4_FEATURES=i2c-probe Build P4 I2C diagnostic'
+	@printf '%s\n' '  make build-p4 P4_FEATURES=i2c-bitbang Build P4 bit-bang I2C diagnostic'
+	@printf '%s\n' '  make build-p4 P4_FEATURES=mpu-smoke Build P4 firmware'
+	@printf '%s\n' '  make flash-p4 PORT=... P4_FEATURES=mpu-smoke Flash P4 firmware'
+	@printf '%s\n' '  make monitor-p4 PORT=...          Monitor already-flashed P4 firmware'
+	@printf '%s\n' '  make run-p4 PORT=... P4_FEATURES=  Flash and monitor P4 firmware'
 	@printf '%s\n' ''
 	@printf '%s\n' 'Validation:'
 	@printf '%s\n' '  make capture PORT=... LOG_FILE=logs/stationary.log MODE=text|binary'
@@ -81,6 +102,15 @@ check-firmware:
 	cargo fmt --all -- --check
 	env -u RUSTFLAGS CARGO_TARGET_DIR=target cargo --config '$(BOARD_DRIVER_PATCH)' check --locked --manifest-path boards/esp32-c3/Cargo.toml --target $(TARGET)
 
+check-firmware-p4:
+	cargo fmt --all -- --check
+	env $(P4_ENV) RUSTFLAGS='$(P4_RUSTFLAGS)' CARGO_TARGET_DIR=target $(P4_CARGO) --config '$(BOARD_DRIVER_PATCH)' check --locked --manifest-path boards/esp32-p4/Cargo.toml --target $(P4_TARGET)
+	env $(P4_ENV) RUSTFLAGS='$(P4_RUSTFLAGS)' CARGO_TARGET_DIR=target $(P4_CARGO) --config '$(BOARD_DRIVER_PATCH)' check --locked --manifest-path boards/esp32-p4/Cargo.toml --target $(P4_TARGET) --features boot-probe
+	env $(P4_ENV) RUSTFLAGS='$(P4_RUSTFLAGS)' CARGO_TARGET_DIR=target $(P4_CARGO) --config '$(BOARD_DRIVER_PATCH)' check --locked --manifest-path boards/esp32-p4/Cargo.toml --target $(P4_TARGET) --features i2c-probe
+	env $(P4_ENV) RUSTFLAGS='$(P4_RUSTFLAGS)' CARGO_TARGET_DIR=target $(P4_CARGO) --config '$(BOARD_DRIVER_PATCH)' check --locked --manifest-path boards/esp32-p4/Cargo.toml --target $(P4_TARGET) --features i2c-bitbang
+	env $(P4_ENV) RUSTFLAGS='$(P4_RUSTFLAGS)' CARGO_TARGET_DIR=target $(P4_CARGO) --config '$(BOARD_DRIVER_PATCH)' check --locked --manifest-path boards/esp32-p4/Cargo.toml --target $(P4_TARGET) --features mpu-smoke
+	env $(P4_ENV) RUSTFLAGS='$(P4_RUSTFLAGS)' CARGO_TARGET_DIR=target $(P4_CARGO) --config '$(BOARD_DRIVER_PATCH)' check --locked --manifest-path boards/esp32-p4/Cargo.toml --target $(P4_TARGET) --features pin-wiggle
+
 test:
 	cargo test --locked -p mpu6050-driver
 	cargo test --locked -p imu-tool -p mpu6050-driver --all-features
@@ -91,14 +121,29 @@ clippy:
 build:
 	env -u RUSTFLAGS CARGO_TARGET_DIR=target cargo --config '$(BOARD_DRIVER_PATCH)' build --manifest-path boards/esp32-c3/Cargo.toml --release --target $(TARGET)
 
+build-p4:
+	env $(P4_ENV) RUSTFLAGS='$(P4_RUSTFLAGS)' CARGO_TARGET_DIR=target $(P4_CARGO) --config '$(BOARD_DRIVER_PATCH)' build --locked --manifest-path boards/esp32-p4/Cargo.toml --release --target $(P4_TARGET) $(P4_FEATURE_ARGS)
+
+build-p4-full:
+	env $(P4_ENV) RUSTFLAGS='$(P4_RUSTFLAGS)' CARGO_TARGET_DIR=target $(P4_CARGO) --config '$(BOARD_DRIVER_PATCH)' build --locked --manifest-path boards/esp32-p4/Cargo.toml --release --target $(P4_TARGET)
+
 flash: build
 	PORT="$(PORT)" ./scripts/esp-port.sh sh -c 'env -u RUSTFLAGS espflash flash --port "$$ESP_PORT" "$(BIN)"'
+
+flash-p4: build-p4
+	PORT="$(PORT)" ./scripts/esp-port.sh sh -c 'espflash flash --port "$$ESP_PORT" "$(P4_BIN)"'
 
 monitor:
 	PORT="$(PORT)" BAUD="$(BAUD)" TARGET="$(TARGET)" LOG_DIR="$(LOG_DIR)" LOG_FILE="$(LOG_FILE)" DURATION="$(DURATION)" MODE="$(MODE)" NO_FLASH=1 NO_MONITOR="$(NO_MONITOR)" NO_LOG="$(NO_LOG)" ./run.sh
 
+monitor-p4:
+	PORT="$(PORT)" ./scripts/esp-port.sh sh -c 'cargo run -p imu-tool -- monitor --port "$$ESP_PORT" --baud "$(BAUD)" $(if $(DURATION),--duration "$(DURATION)") $(if $(LOG_FILE),--out "$(LOG_FILE)") --mode "$(MODE)"'
+
 run:
 	PORT="$(PORT)" BAUD="$(BAUD)" TARGET="$(TARGET)" LOG_DIR="$(LOG_DIR)" LOG_FILE="$(LOG_FILE)" DURATION="$(DURATION)" MODE="$(MODE)" NO_FLASH="$(NO_FLASH)" NO_MONITOR="$(NO_MONITOR)" NO_LOG="$(NO_LOG)" ./run.sh
+
+run-p4: flash-p4
+	PORT="$(PORT)" ./scripts/esp-port.sh sh -c 'cargo run -p imu-tool -- monitor --port "$$ESP_PORT" --baud "$(BAUD)" $(if $(DURATION),--duration "$(DURATION)") $(if $(LOG_FILE),--out "$(LOG_FILE)") --mode "$(MODE)"'
 
 clean:
 	cargo clean

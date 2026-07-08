@@ -1,0 +1,23 @@
+[build]
+target = "riscv32imafc-unknown-none-elf"
+
+[env]
+# The connected board reports ESP32-P4 rev v1.3 / ECO2. The pinned esp-rs fork
+# revision is an intentional pre-v3.0 silicon patch set selected by minimum chip
+# revision 100. Override to match actual silicon before use.
+ESP_HAL_CONFIG_MIN_CHIP_REVISION = "100"
+ESP_SYNC_CONFIG_MIN_CHIP_REVISION = "100"
+# Keep early bring-up conservative. Stack guard watchpoint setup was one of the
+# suspected failure points while validating this ECO2 board, and is not required
+# for the MPU6050 smoke/board validation firmware.
+ESP_HAL_CONFIG_STACK_GUARD_MONITORING = "false"
+ESP_HAL_CONFIG_STACK_GUARD_MONITORING_WITH_DEBUGGER_CONNECTED = "false"
+
+[target.riscv32imafc-unknown-none-elf]
+runner = "espflash flash --monitor"
+rustflags = [
+    # Pull in esp-riscv-rt/esp-hal memory and interrupt linker scripts.
+    "-Clink-arg=-Tlinkall.x",
+    # Required for useful RISC-V panic/backtrace output from esp-backtrace.
+    "-Cforce-frame-pointers=yes",
+]
