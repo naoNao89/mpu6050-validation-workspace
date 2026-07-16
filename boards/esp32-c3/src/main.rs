@@ -23,10 +23,10 @@ use esp_hal::{
     main,
     time::{Duration, Instant, Rate},
 };
-#[cfg(all(feature = "binary-frames", target_arch = "riscv32"))]
-use esp_println::Printer;
 #[cfg(target_arch = "riscv32")]
 use esp_println::println;
+#[cfg(all(feature = "binary-frames", target_arch = "riscv32"))]
+use esp_println::Printer;
 use mpu6050_driver::Identity;
 #[cfg(target_arch = "riscv32")]
 use mpu6050_driver::{
@@ -282,57 +282,89 @@ fn main() -> ! {
     let i2c = high_mpu.release();
     let mut mpu = Mpu6050::new(i2c, Address::Ad0Low);
     log_verification_summary(primary_probe);
-    run_advanced_validation(&mut mpu, &delay, MPU_ADDR_AD0_LOW);
-
+    let interrupts_disabled = run_advanced_validation(&mut mpu, &delay, MPU_ADDR_AD0_LOW);
     println!(
-        "Repeating raw read from 0x68 every {}ms",
-        RAW_STREAM_PERIOD_MS
+        "imu_interrupt_policy=explicit_opt_in sources_disabled={} status_polling=off",
+        interrupts_disabled
     );
-    let mut raw_sequence: u64 = 0;
-    let mut integrity_stats = RawIntegrityStats::default();
-    loop {
-        read_motion_sample_retry_once(
-            &mut mpu,
-            MPU_ADDR_AD0_LOW,
-            &mut raw_sequence,
-            &mut integrity_stats,
+
+    if interrupts_disabled {
+        println!(
+            "Repeating raw read from 0x68 every {}ms",
+            RAW_STREAM_PERIOD_MS
         );
-        delay.delay_millis(RAW_STREAM_PERIOD_MS);
+        let mut raw_sequence: u64 = 0;
+        let mut integrity_stats = RawIntegrityStats::default();
+        loop {
+            read_motion_sample_retry_once(
+                &mut mpu,
+                MPU_ADDR_AD0_LOW,
+                &mut raw_sequence,
+                &mut integrity_stats,
+            );
+            delay.delay_millis(RAW_STREAM_PERIOD_MS);
+        }
     }
+
+    loop {}
 }
 
 #[cfg(target_arch = "riscv32")]
 type BoardMpu<'a> = Mpu6050<I2c<'a, esp_hal::Blocking>>;
 
 #[cfg(target_arch = "riscv32")]
-fn run_advanced_validation(mpu: &mut BoardMpu<'_>, delay: &Delay, address: u8) {
+fn run_advanced_validation(mpu: &mut BoardMpu<'_>, delay: &Delay, address: u8) -> bool {
     println!("advanced_validation_begin");
-    reset_wake_configure(mpu, delay, address);
-    validate_scale_registers(mpu, address);
-    validate_self_test_coarse(mpu, delay, address);
-    validate_fifo_timing(mpu, delay, address);
-    validate_int_status(mpu, address);
+    let initial_zero = reset_wake_configure(mpu, delay, address);
+    let final_zero = if initial_zero {
+        validate_scale_registers(mpu, address);
+        validate_self_test_coarse(mpu, delay, address);
+        validate_fifo_timing(mpu, delay, address);
+        validate_int_status(mpu, delay, address)
+    } else {
+        false
+    };
     println!("advanced_validation_end");
+    final_zero
 }
 
 #[cfg(target_arch = "riscv32")]
-fn reset_wake_configure(mpu: &mut BoardMpu<'_>, delay: &Delay, _address: u8) {
+fn reset_wake_configure(mpu: &mut BoardMpu<'_>, delay: &Delay, _address: u8) -> bool {
     println!("advanced reset_wake_begin");
     let reset_ok = mpu.reset().is_ok();
     delay.delay_millis(100);
     let wake_ok = mpu.wake().is_ok();
     delay.delay_millis(20);
+    let disable_write_ok = mpu.disable_all_interrupts().is_ok();
+    let interrupt_enable = mpu.interrupt_enable().ok();
+    let readback_ok = interrupt_enable.is_some();
+    let data_ready = interrupt_enable
+        .map(|value| value.data_ready())
+        .unwrap_or(false);
+    let fifo_overflow = interrupt_enable
+        .map(|value| value.fifo_overflow())
+        .unwrap_or(false);
+    let none_enabled = interrupt_enable
+        .map(|value| value.none_enabled())
+        .unwrap_or(false);
+    let confirmed_zero = readback_ok && none_enabled;
     let config_ok = false;
     let sample_ok = false;
-    let accel_ok = mpu.set_accel_range(AccelRange::G2).is_ok();
-    let gyro_ok = mpu.set_gyro_range(GyroRange::Dps250).is_ok();
+    let accel_ok = confirmed_zero && mpu.set_accel_range(AccelRange::G2).is_ok();
+    let gyro_ok = confirmed_zero && mpu.set_gyro_range(GyroRange::Dps250).is_ok();
     let pwr = None;
     let config = None;
     let smplrt = None;
     println!(
-        "advanced reset_wake reset_ok={} wake_ok={} config_ok={} sample_ok={} accel_cfg_ok={} gyro_cfg_ok={} pwr_mgmt_1={} config={} smplrt_div={}",
+        "advanced reset_wake reset_ok={} wake_ok={} int_disable_write_ok={} int_readback_ok={} int_data_ready={} int_fifo_overflow={} int_none_enabled={} int_confirmed_zero={} config_ok={} sample_ok={} accel_cfg_ok={} gyro_cfg_ok={} pwr_mgmt_1={} config={} smplrt_div={}",
         reset_ok,
         wake_ok,
+        disable_write_ok,
+        readback_ok,
+        data_ready,
+        fifo_overflow,
+        none_enabled,
+        confirmed_zero,
         config_ok,
         sample_ok,
         accel_ok,
@@ -342,6 +374,7 @@ fn reset_wake_configure(mpu: &mut BoardMpu<'_>, delay: &Delay, _address: u8) {
         fmt_opt_hex(smplrt)
     );
     println!("advanced reset_wake_end");
+    confirmed_zero
 }
 
 #[cfg(target_arch = "riscv32")]
@@ -459,21 +492,68 @@ fn validate_fifo_timing(mpu: &mut BoardMpu<'_>, delay: &Delay, _address: u8) {
 }
 
 #[cfg(target_arch = "riscv32")]
-fn validate_int_status(mpu: &mut BoardMpu<'_>, _address: u8) {
+fn validate_int_status(mpu: &mut BoardMpu<'_>, delay: &Delay, _address: u8) -> bool {
     println!("advanced int_status_begin");
-    let enable_ok =
-        mpu.enable_data_ready_interrupt().is_ok() && mpu.enable_fifo_overflow_interrupt().is_ok();
-    let status = mpu.int_status().ok();
+    let pre_disable_write_ok = mpu.disable_all_interrupts().is_ok();
+    let pre_enable = mpu.interrupt_enable().ok();
+    let pre_readback_ok = pre_enable.is_some();
+    let pre_data_ready = pre_enable.map(|value| value.data_ready()).unwrap_or(false);
+    let pre_fifo_overflow = pre_enable
+        .map(|value| value.fifo_overflow())
+        .unwrap_or(false);
+    let pre_none_enabled = pre_enable
+        .map(|value| value.none_enabled())
+        .unwrap_or(false);
+    let pre_confirmed_zero = pre_readback_ok && pre_none_enabled;
+    let enable_attempted = pre_confirmed_zero;
+    let enable_ok = if enable_attempted {
+        mpu.enable_data_ready_interrupt().is_ok()
+    } else {
+        false
+    };
+    let status = if enable_ok {
+        delay.delay_millis(10);
+        mpu.int_status().ok()
+    } else {
+        None
+    };
     let data_ready = status.map(|v| v.data_ready()).unwrap_or(false);
     let fifo_overflow = status.map(|v| v.fifo_overflow()).unwrap_or(false);
+    let final_disable_write_ok = mpu.disable_all_interrupts().is_ok();
+    let final_enable = mpu.interrupt_enable().ok();
+    let final_readback_ok = final_enable.is_some();
+    let final_data_ready = final_enable
+        .map(|value| value.data_ready())
+        .unwrap_or(false);
+    let final_fifo_overflow = final_enable
+        .map(|value| value.fifo_overflow())
+        .unwrap_or(false);
+    let final_none_enabled = final_enable
+        .map(|value| value.none_enabled())
+        .unwrap_or(false);
+    let final_confirmed_zero = final_readback_ok && final_none_enabled;
     println!(
-        "advanced int_status enable_ok={} int_status={} data_ready={} fifo_overflow={}",
+        "advanced int_status pre_disable_write_ok={} pre_readback_ok={} pre_data_ready={} pre_fifo_overflow={} pre_none_enabled={} pre_confirmed_zero={} enable_attempted={} enable_ok={} status_read_ok={} data_ready={} fifo_overflow={} final_disable_write_ok={} final_readback_ok={} final_data_ready={} final_fifo_overflow={} final_none_enabled={} final_confirmed_zero={}",
+        pre_disable_write_ok,
+        pre_readback_ok,
+        pre_data_ready,
+        pre_fifo_overflow,
+        pre_none_enabled,
+        pre_confirmed_zero,
+        enable_attempted,
         enable_ok,
-        fmt_opt_hex(None),
+        status.is_some(),
         data_ready,
-        fifo_overflow
+        fifo_overflow,
+        final_disable_write_ok,
+        final_readback_ok,
+        final_data_ready,
+        final_fifo_overflow,
+        final_none_enabled,
+        final_confirmed_zero
     );
     println!("advanced int_status_end");
+    final_confirmed_zero
 }
 
 #[cfg(target_arch = "riscv32")]

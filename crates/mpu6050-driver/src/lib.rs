@@ -11,7 +11,7 @@ mod self_test;
 
 pub use config::{AccelRange, Address, Dlpf, DlpfReadError, GyroRange, Identity};
 pub use fifo::{FIFO_ACCEL_GYRO_FRAME_BYTES, FifoReadDiagnostics};
-pub use interrupt::IntStatus;
+pub use interrupt::{IntStatus, InterruptEnable};
 pub use raw::{
     ACCEL_LSB_PER_G_2G, GYRO_LSB_PER_DPS_250DPS, ImuSample, RawAccelGyroTemp, RawReadOutcome,
     RawRetryPolicy, RawSampleSuspicion, TEMP_LSB_PER_DEG_C, TEMP_OFFSET_DEG_C, raw_to_imu_sample,
