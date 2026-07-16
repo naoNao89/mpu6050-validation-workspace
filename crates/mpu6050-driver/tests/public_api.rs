@@ -95,6 +95,8 @@ fn crate_root_public_api_still_imports() {
     fn takes_int_status(_status: IntStatus) {}
     let _ = takes_int_status;
 
+    // Compile-time guards for the externally visible method signatures.
+    // These methods are not executed; behavioral I2C tests live with the driver.
     let _: fn(&mut Mpu6050<ApiI2c>, Dlpf) -> Result<(), ApiError> = Mpu6050::<ApiI2c>::set_dlpf;
     let _: fn(&mut Mpu6050<ApiI2c>) -> Result<Dlpf, DlpfReadError<ApiError>> =
         Mpu6050::<ApiI2c>::dlpf;

@@ -63,9 +63,19 @@ pub enum GyroRange {
 
 /// Digital low-pass filter configuration from the CONFIG register.
 ///
-/// `Cfg2` selects approximately 94 Hz accelerometer bandwidth and approximately
-/// 98 Hz gyroscope bandwidth; it is not named for a single bandwidth because the
-/// two sensors differ.
+/// | Setting | Accel bandwidth | Gyro bandwidth | Gyro base |
+/// | --- | --- | --- | --- |
+/// | `Cfg0` | 260 Hz | 256 Hz | 8 kHz |
+/// | `Cfg1` | 184 Hz | 188 Hz | 1 kHz |
+/// | `Cfg2` | 94 Hz | 98 Hz | 1 kHz |
+/// | `Cfg3` | 44 Hz | 42 Hz | 1 kHz |
+/// | `Cfg4` | 21 Hz | 20 Hz | 1 kHz |
+/// | `Cfg5` | 10 Hz | 10 Hz | 1 kHz |
+/// | `Cfg6` | 5 Hz | 5 Hz | 1 kHz |
+///
+/// Bandwidth is not sample rate. `Cfg0` disables the DLPF and uses the 8 kHz
+/// gyroscope output base; `Cfg1` through `Cfg6` enable filtering and use 1 kHz.
+/// Raw value 7 is reserved and intentionally absent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum Dlpf {
@@ -96,13 +106,13 @@ impl Dlpf {
         }
     }
 
-    /// Returns the configured sample rate in Hz for `divider`.
+    /// Returns the nominal configured sensor sample rate in Hz for `divider`.
     ///
-    /// The formula is `base_rate / (divider as f32 + 1.0)`, where the base rate is
-    /// 8000.0 Hz for `Cfg0` and 1000.0 Hz for `Cfg1` through `Cfg6`. This returns
-    /// an approximate floating-point result and does not truncate to an integer.
-    /// The 8 kHz configured rate of `Cfg0` does not imply unique accelerometer
-    /// data at 8 kHz.
+    /// `configured sample rate = gyroscope output base rate / (1 + SMPLRT_DIV)`.
+    /// For `Cfg2` with divider 4, this is `1000 / (1 + 4) = 200 Hz`: 1000 Hz is
+    /// the base, 200 Hz is configured, and 94/98 Hz are accel/gyro bandwidths.
+    /// This nominal calculation does not measure runtime timing. Accelerometer new
+    /// data is limited to 1 kHz, so configured rates above 1 kHz may repeat samples.
     pub fn sample_rate_hz(self, divider: u8) -> f32 {
         let base_rate = match self {
             Self::Cfg0 => 8000.0,
@@ -254,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn dlpf_encodings_decodes_and_rates_are_complete() {
+    fn dlpf_variants_encode_and_decode_valid_register_values() {
         let all = [
             Dlpf::Cfg0,
             Dlpf::Cfg1,
@@ -268,24 +278,56 @@ mod tests {
             assert_eq!(dlpf.bits(), bits as u8);
             assert_eq!(Dlpf::from_bits(bits as u8), Some(dlpf));
         }
+    }
+
+    #[test]
+    fn dlpf_reserved_register_value_is_rejected() {
         assert_eq!(Dlpf::from_bits(7), None);
+    }
+
+    #[test]
+    fn cfg0_uses_8khz_gyro_output_base_rate() {
         assert_eq!(Dlpf::Cfg0.sample_rate_hz(0), 8000.0);
+        assert_eq!(Dlpf::Cfg0.sample_rate_hz(255), 31.25);
+    }
+
+    #[test]
+    fn filtered_configs_use_1khz_gyro_output_base_rate() {
         assert_eq!(Dlpf::Cfg1.sample_rate_hz(0), 1000.0);
-        assert_eq!(Dlpf::Cfg2.sample_rate_hz(4), 200.0);
-        for dlpf in all[1..].iter().copied() {
+        let filtered = [
+            Dlpf::Cfg1,
+            Dlpf::Cfg2,
+            Dlpf::Cfg3,
+            Dlpf::Cfg4,
+            Dlpf::Cfg5,
+            Dlpf::Cfg6,
+        ];
+        for dlpf in filtered {
             assert_eq!(dlpf.sample_rate_hz(255), 1000.0 / 256.0);
         }
-        assert!((Dlpf::Cfg0.sample_rate_hz(255) - 31.25).abs() < 0.000_01);
+    }
+
+    #[test]
+    fn divider_four_produces_200hz_from_1khz_base() {
+        assert_eq!(Dlpf::Cfg2.sample_rate_hz(4), 200.0);
+    }
+
+    #[test]
+    fn sample_rate_preserves_fractional_results() {
         assert!((Dlpf::Cfg3.sample_rate_hz(2) - 333.333_34).abs() < 0.001);
     }
 
     #[test]
     fn dlpf_reads_mask_reserved_and_i2c_errors() {
+        const CFG2_BITS: u8 = 0b010;
+        const UPPER_BITS_WITH_CFG2: u8 = 0b0011_1010;
+        const RESERVED_BITS: u8 = 0b0000_0111;
+        const UPPER_BITS_WITH_RESERVED: u8 = 0b0011_1111;
         for (raw, expected) in [
-            (2, Ok(Dlpf::Cfg2)),
-            (0x3a, Ok(Dlpf::Cfg2)),
-            (7, Err(DlpfReadError::ReservedConfig)),
-            (0x3f, Err(DlpfReadError::ReservedConfig)),
+            (CFG2_BITS, Ok(Dlpf::Cfg2)),
+            (UPPER_BITS_WITH_CFG2, Ok(Dlpf::Cfg2)),
+            (RESERVED_BITS, Err(DlpfReadError::ReservedConfig)),
+            (UPPER_BITS_WITH_RESERVED, Err(DlpfReadError::ReservedConfig)),
         ] {
             let mut mpu = Mpu6050::new(
                 FakeI2c::new(vec![Expected::Read(registers::CONFIG, Ok(raw))]),
@@ -303,10 +345,13 @@ mod tests {
 
     #[test]
     fn dlpf_setter_preserves_config_upper_bits_and_propagates_failures() {
+        const CONFIG_UPPER_BITS: u8 = 0b1111_1000;
+        const CONFIG_UPPER_BITS_WITH_CFG2: u8 = 0b1111_1010;
+        // Replace only CONFIG[2:0] with Cfg2 while preserving CONFIG[7:3].
         let mut mpu = Mpu6050::new(
             FakeI2c::new(vec![
-                Expected::Read(registers::CONFIG, Ok(0xf8)),
-                Expected::Write(registers::CONFIG, 0xfa, Ok(())),
+                Expected::Read(registers::CONFIG, Ok(CONFIG_UPPER_BITS)),
+                Expected::Write(registers::CONFIG, CONFIG_UPPER_BITS_WITH_CFG2, Ok(())),
             ]),
             Address::Ad0Low,
         );
@@ -329,16 +374,18 @@ mod tests {
 
     #[test]
     fn divider_reads_writes_and_propagates_errors_unchanged() {
-        let mut mpu = Mpu6050::new(
-            FakeI2c::new(vec![
-                Expected::Write(registers::SMPLRT_DIV, 37, Ok(())),
-                Expected::Read(registers::SMPLRT_DIV, Ok(37)),
-            ]),
-            Address::Ad0Low,
-        );
-        assert_eq!(mpu.set_sample_rate_divider(37), Ok(()));
-        assert_eq!(mpu.sample_rate_divider(), Ok(37));
-        assert!(mpu.release().expected.is_empty());
+        for divider in [0, 4, u8::MAX] {
+            let mut mpu = Mpu6050::new(
+                FakeI2c::new(vec![
+                    Expected::Write(registers::SMPLRT_DIV, divider, Ok(())),
+                    Expected::Read(registers::SMPLRT_DIV, Ok(divider)),
+                ]),
+                Address::Ad0Low,
+            );
+            assert_eq!(mpu.set_sample_rate_divider(divider), Ok(()));
+            assert_eq!(mpu.sample_rate_divider(), Ok(divider));
+            assert!(mpu.release().expected.is_empty());
+        }
         let mut set_error = Mpu6050::new(
             FakeI2c::new(vec![Expected::Write(
                 registers::SMPLRT_DIV,
