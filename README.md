@@ -38,25 +38,14 @@ Current hardware photos:
 
 <img src="hardware/boards/gy521-blue-clone-v1/photos/front-overview.jpg" alt="Front overview" width="50%" />
 
-## ESP32-C3 reference wiring
+## Hardware status
 
-Firmware sample: `boards/esp32-c3/src/main.rs`.
+| Board    | Status                | Notes                                                                                                                                        |
+| -------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| ESP32-C3 | Reference path        | Main release-track firmware path. Board-specific wiring and commands live under [`boards/esp32-c3`](boards/esp32-c3).                       |
+| ESP32-P4 | Experimental bring-up | Tracked in [`boards/esp32-p4`](boards/esp32-p4). Current validation uses a pinned downstream esp-rs fork and software bitbang I2C.          |
 
-| GY-521 / MPU6050 | ESP32-C3 SuperMini-class board |
-| --- | --- |
-| VCC | 3V |
-| GND | GND |
-| SCL | GPIO0 |
-| SDA | GPIO1 |
-| XDA | GPIO3, unused |
-| XCL | GPIO4, unused |
-| AD0 | GPIO5, driven low |
-| INT | GPIO6 |
-
-`AD0` low selects I2C address `0x68`; high selects `0x69`. The sample drives
-`AD0` low and probes both addresses for diagnostics.
-
-## Build and flash
+## ESP32-C3 build and flash
 
 Flash and monitor:
 
