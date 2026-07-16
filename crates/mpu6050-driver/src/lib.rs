@@ -9,7 +9,7 @@ mod raw;
 mod registers;
 mod self_test;
 
-pub use config::{AccelRange, Address, GyroRange, Identity};
+pub use config::{AccelRange, Address, Dlpf, DlpfReadError, GyroRange, Identity};
 pub use fifo::{FIFO_ACCEL_GYRO_FRAME_BYTES, FifoReadDiagnostics};
 pub use interrupt::IntStatus;
 pub use raw::{

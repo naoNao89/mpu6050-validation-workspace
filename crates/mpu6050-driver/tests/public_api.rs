@@ -1,9 +1,59 @@
 use mpu6050_driver::{
-    ACCEL_LSB_PER_G_2G, AccelRange, Address, FIFO_ACCEL_GYRO_FRAME_BYTES, FifoReadDiagnostics,
-    GYRO_LSB_PER_DPS_250DPS, GyroRange, Identity, IntStatus, Mpu6050, RawAccelGyroTemp,
-    RawReadOutcome, RawRetryPolicy, RawSampleSuspicion, TEMP_LSB_PER_DEG_C, TEMP_OFFSET_DEG_C,
-    raw_to_imu_sample,
+    ACCEL_LSB_PER_G_2G, AccelRange, Address, Dlpf, DlpfReadError, FIFO_ACCEL_GYRO_FRAME_BYTES,
+    FifoReadDiagnostics, GYRO_LSB_PER_DPS_250DPS, GyroRange, Identity, IntStatus, Mpu6050,
+    RawAccelGyroTemp, RawReadOutcome, RawRetryPolicy, RawSampleSuspicion, TEMP_LSB_PER_DEG_C,
+    TEMP_OFFSET_DEG_C, raw_to_imu_sample,
 };
+
+struct ApiI2c;
+
+#[derive(Debug)]
+struct ApiError;
+
+impl embedded_hal::i2c::Error for ApiError {
+    fn kind(&self) -> embedded_hal::i2c::ErrorKind {
+        embedded_hal::i2c::ErrorKind::Other
+    }
+}
+
+impl embedded_hal::i2c::ErrorType for ApiI2c {
+    type Error = ApiError;
+}
+
+impl embedded_hal::i2c::I2c for ApiI2c {
+    fn read(
+        &mut self,
+        _address: embedded_hal::i2c::SevenBitAddress,
+        _read: &mut [u8],
+    ) -> Result<(), Self::Error> {
+        unreachable!("compile-only public API probe")
+    }
+
+    fn write(
+        &mut self,
+        _address: embedded_hal::i2c::SevenBitAddress,
+        _write: &[u8],
+    ) -> Result<(), Self::Error> {
+        unreachable!("compile-only public API probe")
+    }
+
+    fn write_read(
+        &mut self,
+        _address: embedded_hal::i2c::SevenBitAddress,
+        _write: &[u8],
+        _read: &mut [u8],
+    ) -> Result<(), Self::Error> {
+        unreachable!("compile-only public API probe")
+    }
+
+    fn transaction(
+        &mut self,
+        _address: embedded_hal::i2c::SevenBitAddress,
+        _operations: &mut [embedded_hal::i2c::Operation<'_>],
+    ) -> Result<(), Self::Error> {
+        unreachable!("compile-only public API probe")
+    }
+}
 
 #[test]
 fn crate_root_public_api_still_imports() {
@@ -34,6 +84,8 @@ fn crate_root_public_api_still_imports() {
 
     let _ = AccelRange::G2;
     let _ = GyroRange::Dps250;
+    let _ = Dlpf::Cfg2.sample_rate_hz(4);
+    let _ = DlpfReadError::<()>::ReservedConfig;
     let _ = Identity::Mpu6050;
     let _ = RawRetryPolicy::reject_after_retries(0);
     let _ = RawRetryPolicy::accept_after_retries(1);
@@ -42,4 +94,12 @@ fn crate_root_public_api_still_imports() {
 
     fn takes_int_status(_status: IntStatus) {}
     let _ = takes_int_status;
+
+    let _: fn(&mut Mpu6050<ApiI2c>, Dlpf) -> Result<(), ApiError> = Mpu6050::<ApiI2c>::set_dlpf;
+    let _: fn(&mut Mpu6050<ApiI2c>) -> Result<Dlpf, DlpfReadError<ApiError>> =
+        Mpu6050::<ApiI2c>::dlpf;
+    let _: fn(&mut Mpu6050<ApiI2c>, u8) -> Result<(), ApiError> =
+        Mpu6050::<ApiI2c>::set_sample_rate_divider;
+    let _: fn(&mut Mpu6050<ApiI2c>) -> Result<u8, ApiError> =
+        Mpu6050::<ApiI2c>::sample_rate_divider;
 }

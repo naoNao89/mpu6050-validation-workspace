@@ -1,3 +1,5 @@
+pub(crate) const SMPLRT_DIV: u8 = 0x19;
+pub(crate) const CONFIG: u8 = 0x1A;
 pub(crate) const GYRO_CONFIG: u8 = 0x1B;
 pub(crate) const ACCEL_CONFIG: u8 = 0x1C;
 pub(crate) const FIFO_EN: u8 = 0x23;
@@ -13,6 +15,7 @@ pub(crate) const WHO_AM_I: u8 = 0x75;
 pub(crate) const ACCEL_RANGE_MASK: u8 = 0x18;
 pub(crate) const GYRO_RANGE_MASK: u8 = 0x18;
 pub(crate) const SELF_TEST_MASK: u8 = 0xE0;
+pub(crate) const DLPF_CFG_MASK: u8 = 0x07;
 pub(crate) const USER_CTRL_FIFO_EN: u8 = 1 << 6;
 pub(crate) const USER_CTRL_FIFO_RESET: u8 = 1 << 2;
 pub(crate) const INT_ENABLE_DATA_RDY: u8 = 1 << 0;
