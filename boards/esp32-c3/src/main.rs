@@ -317,6 +317,18 @@ fn stream_startup_allowed(final_interrupts_zero: bool, timing_registers_confirme
     final_interrupts_zero && timing_registers_confirmed
 }
 
+fn calculated_rate_valid(rate_hz: Option<f32>) -> bool {
+    rate_hz
+        .map(|rate| rate.is_finite() && rate > 0.0)
+        .unwrap_or(false)
+}
+
+fn calculated_rate_approx_target(rate_hz: Option<f32>) -> bool {
+    calculated_rate_valid(rate_hz)
+        && (rate_hz.unwrap_or_default() - EXPECTED_SENSOR_SAMPLE_RATE_HZ).abs()
+            <= SAMPLE_RATE_TOLERANCE_HZ
+}
+
 struct HexOpt(Option<u8>);
 struct U16Opt(Option<u16>);
 struct U8Opt(Option<u8>);
@@ -561,6 +573,8 @@ fn reset_wake_configure(mpu: &mut BoardMpu<'_>, delay: &Delay, _address: u8) -> 
     let rate_hz = dlpf
         .zip(divider)
         .map(|(dlpf, divider)| dlpf.sample_rate_hz(divider));
+    let calculated_rate_valid = calculated_rate_valid(rate_hz);
+    let calculated_rate_approx_target = calculated_rate_approx_target(rate_hz);
     let timing_error = timing_error.map(|failure| failure.error);
     let progress = timing_error.map_or(7, SampleTimingError::progress);
     let dlpf_write_attempted = timing.is_some();
@@ -584,7 +598,7 @@ fn reset_wake_configure(mpu: &mut BoardMpu<'_>, delay: &Delay, _address: u8) -> 
                 "dlpf_write_not_attempted"
             });
     println!(
-        "advanced reset_wake reset_ok={} wake_ok={} int_disable_write_ok={} int_readback_ok={} int_data_ready={} int_fifo_overflow={} int_none_enabled={} int_confirmed_zero={} configuration_prerequisites_confirmed={} dlpf_write_attempted={} dlpf_write_ok={} dlpf_readback_attempted={} dlpf_readback_ok={} dlpf_match={} dlpf={} sample_divider_write_attempted={} sample_divider_write_ok={} sample_divider_readback_attempted={} sample_divider_readback_ok={} sample_divider_match={} sample_rate_divider={} calculated_sample_rate_hz={:.1} sample_rate_valid={} sample_rate_approx_200hz={} timing_failure_stage={} timing_registers_confirmed={} accel_cfg_ok={} gyro_cfg_ok={}",
+        "advanced reset_wake reset_ok={} wake_ok={} int_disable_write_ok={} int_readback_ok={} int_data_ready={} int_fifo_overflow={} int_none_enabled={} int_confirmed_zero={} configuration_prerequisites_confirmed={} dlpf_write_attempted={} dlpf_write_ok={} dlpf_readback_attempted={} dlpf_readback_ok={} dlpf_match={} dlpf={} sample_divider_write_attempted={} sample_divider_write_ok={} sample_divider_readback_attempted={} sample_divider_readback_ok={} sample_divider_match={} sample_rate_divider={} calculated_sample_rate_hz={:.1} calculated_sample_rate_valid={} calculated_sample_rate_approx_target={} timing_failure_stage={} timing_registers_confirmed={} accel_cfg_ok={} gyro_cfg_ok={}",
         reset_ok,
         wake_ok,
         int_disable_write_ok,
@@ -607,15 +621,18 @@ fn reset_wake_configure(mpu: &mut BoardMpu<'_>, delay: &Delay, _address: u8) -> 
         divider_match,
         U8Opt(divider),
         rate_hz.unwrap_or(f32::NAN),
-        rate_hz.is_some(),
-        timing_registers_confirmed,
+        calculated_rate_valid,
+        calculated_rate_approx_target,
         failure_stage,
         timing_registers_confirmed,
         accel_cfg_ok,
         gyro_cfg_ok
     );
-    if timing_registers_confirmed {
-        println!("configured_sensor_sample_rate_hz=200.0");
+    if let Some(Ok(verified_timing)) = timing {
+        println!(
+            "configured_nominal_sample_rate_hz={:.1}",
+            verified_timing.rate_hz
+        );
     }
     println!("advanced reset_wake_end");
     (interrupt_enable_confirmed_zero, timing_registers_confirmed)
@@ -1258,6 +1275,13 @@ mod tests {
         assert_eq!(RAW_STREAM_PERIOD_MS, 100);
         assert_eq!(accel_range_from_setting(0), AccelRange::G2);
         assert_eq!(gyro_range_from_setting(0), GyroRange::Dps250);
+        assert!(calculated_rate_valid(Some(200.0)));
+        assert!(calculated_rate_approx_target(Some(200.0)));
+        assert!(!calculated_rate_valid(Some(f32::NAN)));
+        assert!(!calculated_rate_valid(Some(f32::INFINITY)));
+        assert!(!calculated_rate_valid(Some(0.0)));
+        assert!(!calculated_rate_valid(None));
+        assert!(!calculated_rate_approx_target(Some(199.0)));
     }
     #[test]
     fn configure_sample_timing_succeeds_in_order() {
