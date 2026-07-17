@@ -38,9 +38,14 @@ const MPU_ADDR_AD0_HIGH: u8 = 0x69;
 const FIFO_ACCEL_GYRO_FRAME_BYTES: u16 = 12;
 const RAW_STREAM_PERIOD_MS: u32 = 100;
 const TARGET_DLPF: Dlpf = Dlpf::Cfg2;
-const TARGET_SAMPLE_RATE_DIVIDER: u8 = 4;
-const EXPECTED_SENSOR_SAMPLE_RATE_HZ: f32 = 200.0;
-const SAMPLE_RATE_TOLERANCE_HZ: f32 = 0.01;
+// Exact value written to the MPU SMPLRT_DIV register.
+const TARGET_SMPLRT_DIV: u8 = 4;
+// Nominal rate derived from the configured registers:
+// 1_000 Hz / (1 + SMPLRT_DIV=4) = 200 Hz.
+// This does not verify the physical sensor cadence or host read rate.
+const EXPECTED_NOMINAL_SAMPLE_RATE_HZ: f32 = 200.0;
+// Floating-point epsilon for the nominal-rate calculation, not a hardware tolerance.
+const NOMINAL_RATE_COMPARISON_EPSILON_HZ: f32 = 0.01;
 #[cfg(feature = "binary-frames")]
 const BINARY_FRAME_MAGIC: [u8; 2] = *b"IM";
 #[cfg(feature = "binary-frames")]
@@ -274,7 +279,7 @@ fn configure_sample_timing(
             None,
         ));
     }
-    if !device.set_sample_rate_divider(TARGET_SAMPLE_RATE_DIVIDER) {
+    if !device.set_sample_rate_divider(TARGET_SMPLRT_DIV) {
         return Err(SampleTimingFailure::new(
             SampleTimingError::DividerWrite,
             Some(dlpf),
@@ -288,7 +293,7 @@ fn configure_sample_timing(
             Some(dlpf),
             None,
         ))?;
-    if divider != TARGET_SAMPLE_RATE_DIVIDER {
+    if divider != TARGET_SMPLRT_DIV {
         return Err(SampleTimingFailure::new(
             SampleTimingError::DividerMismatch,
             Some(dlpf),
@@ -298,7 +303,7 @@ fn configure_sample_timing(
     let rate_hz = dlpf.sample_rate_hz(divider);
     if !rate_hz.is_finite()
         || rate_hz <= 0.0
-        || (rate_hz - EXPECTED_SENSOR_SAMPLE_RATE_HZ).abs() > SAMPLE_RATE_TOLERANCE_HZ
+        || (rate_hz - EXPECTED_NOMINAL_SAMPLE_RATE_HZ).abs() > NOMINAL_RATE_COMPARISON_EPSILON_HZ
     {
         return Err(SampleTimingFailure::new(
             SampleTimingError::InvalidRate,
@@ -325,8 +330,8 @@ fn calculated_rate_valid(rate_hz: Option<f32>) -> bool {
 
 fn calculated_rate_approx_target(rate_hz: Option<f32>) -> bool {
     calculated_rate_valid(rate_hz)
-        && (rate_hz.unwrap_or_default() - EXPECTED_SENSOR_SAMPLE_RATE_HZ).abs()
-            <= SAMPLE_RATE_TOLERANCE_HZ
+        && (rate_hz.unwrap_or_default() - EXPECTED_NOMINAL_SAMPLE_RATE_HZ).abs()
+            <= NOMINAL_RATE_COMPARISON_EPSILON_HZ
 }
 
 struct HexOpt(Option<u8>);
@@ -1238,7 +1243,7 @@ mod tests {
             self.dlpf_readback
         }
         fn set_sample_rate_divider(&mut self, value: u8) -> bool {
-            assert_eq!(value, TARGET_SAMPLE_RATE_DIVIDER);
+            assert_eq!(value, TARGET_SMPLRT_DIV);
             self.calls.push(TimingCall::SetDivider);
             self.divider_write_ok
         }
@@ -1265,12 +1270,10 @@ mod tests {
     #[test]
     fn target_timing_period_and_ranges_are_unchanged() {
         assert_eq!(TARGET_DLPF, Dlpf::Cfg2);
-        assert_eq!(TARGET_SAMPLE_RATE_DIVIDER, 4);
+        assert_eq!(TARGET_SMPLRT_DIV, 4);
         assert!(
-            (TARGET_DLPF.sample_rate_hz(TARGET_SAMPLE_RATE_DIVIDER)
-                - EXPECTED_SENSOR_SAMPLE_RATE_HZ)
-                .abs()
-                <= SAMPLE_RATE_TOLERANCE_HZ
+            (TARGET_DLPF.sample_rate_hz(TARGET_SMPLRT_DIV) - EXPECTED_NOMINAL_SAMPLE_RATE_HZ).abs()
+                <= NOMINAL_RATE_COMPARISON_EPSILON_HZ
         );
         assert_eq!(RAW_STREAM_PERIOD_MS, 100);
         assert_eq!(accel_range_from_setting(0), AccelRange::G2);
