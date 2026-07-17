@@ -9,6 +9,7 @@ use core::fmt;
 
 mod board;
 
+#[cfg(target_arch = "riscv32")]
 use board::{
     AD0_PIN_NAME, BOARD_NAME, GND_PIN_NAME, I2C_BUS_NAME, I2C_FREQUENCY_KHZ, INT_PIN_NAME,
     SCL_PIN_NAME, SDA_PIN_NAME, VCC_PIN_NAME, XCL_PIN_NAME, XDA_PIN_NAME,
@@ -23,21 +24,28 @@ use esp_hal::{
     main,
     time::{Duration, Instant, Rate},
 };
-#[cfg(target_arch = "riscv32")]
-use esp_println::println;
 #[cfg(all(feature = "binary-frames", target_arch = "riscv32"))]
 use esp_println::Printer;
-use mpu6050_driver::Identity;
 #[cfg(target_arch = "riscv32")]
-use mpu6050_driver::{
-    AccelRange, Address, GyroRange, Mpu6050, RawAccelGyroTemp, RawReadOutcome, RawRetryPolicy,
-};
+use esp_println::println;
+use mpu6050_driver::{AccelRange, Dlpf, GyroRange, Identity};
+#[cfg(target_arch = "riscv32")]
+use mpu6050_driver::{Address, Mpu6050, RawAccelGyroTemp, RawReadOutcome, RawRetryPolicy};
 
 const MPU_ADDR_AD0_LOW: u8 = 0x68;
 const MPU_ADDR_AD0_HIGH: u8 = 0x69;
 
 const FIFO_ACCEL_GYRO_FRAME_BYTES: u16 = 12;
 const RAW_STREAM_PERIOD_MS: u32 = 100;
+const TARGET_DLPF: Dlpf = Dlpf::Cfg2;
+// Exact value written to the MPU SMPLRT_DIV register.
+const TARGET_SMPLRT_DIV: u8 = 4;
+// Nominal rate derived from the configured registers:
+// 1_000 Hz / (1 + SMPLRT_DIV=4) = 200 Hz.
+// This does not verify the physical sensor cadence or host read rate.
+const EXPECTED_NOMINAL_SAMPLE_RATE_HZ: f32 = 200.0;
+// Floating-point epsilon for the nominal-rate calculation, not a hardware tolerance.
+const NOMINAL_RATE_COMPARISON_EPSILON_HZ: f32 = 0.01;
 #[cfg(feature = "binary-frames")]
 const BINARY_FRAME_MAGIC: [u8; 2] = *b"IM";
 #[cfg(feature = "binary-frames")]
@@ -176,8 +184,160 @@ struct RawAverage {
     gz: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct VerifiedSampleTiming {
+    dlpf: Dlpf,
+    divider: u8,
+    rate_hz: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SampleTimingError {
+    DlpfWrite,
+    DlpfRead,
+    DlpfMismatch,
+    DividerWrite,
+    DividerRead,
+    DividerMismatch,
+    InvalidRate,
+}
+
+impl SampleTimingError {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::DlpfWrite => "dlpf_write_failed",
+            Self::DlpfRead => "dlpf_readback_failed",
+            Self::DlpfMismatch => "dlpf_readback_mismatch",
+            Self::DividerWrite => "divider_write_failed",
+            Self::DividerRead => "divider_readback_failed",
+            Self::DividerMismatch => "divider_readback_mismatch",
+            Self::InvalidRate => "sample_rate_calculation_invalid",
+        }
+    }
+
+    fn progress(self) -> u8 {
+        match self {
+            Self::DlpfWrite => 0,
+            Self::DlpfRead => 1,
+            Self::DlpfMismatch => 2,
+            Self::DividerWrite => 3,
+            Self::DividerRead => 4,
+            Self::DividerMismatch => 5,
+            Self::InvalidRate => 6,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SampleTimingFailure {
+    error: SampleTimingError,
+    dlpf: Option<Dlpf>,
+    divider: Option<u8>,
+}
+
+impl SampleTimingFailure {
+    fn new(error: SampleTimingError, dlpf: Option<Dlpf>, divider: Option<u8>) -> Self {
+        Self {
+            error,
+            dlpf,
+            divider,
+        }
+    }
+}
+
+trait SampleTimingDevice {
+    fn set_dlpf(&mut self, dlpf: Dlpf) -> bool;
+    fn dlpf(&mut self) -> Option<Dlpf>;
+    fn set_sample_rate_divider(&mut self, divider: u8) -> bool;
+    fn sample_rate_divider(&mut self) -> Option<u8>;
+}
+
+#[cfg(target_arch = "riscv32")]
+#[derive(Debug, Clone, Copy)]
+struct AdvancedValidationResult {
+    interrupt_state_confirmed_zero: bool,
+    timing_registers_confirmed: bool,
+}
+
+fn configure_sample_timing(
+    device: &mut impl SampleTimingDevice,
+) -> Result<VerifiedSampleTiming, SampleTimingFailure> {
+    if !device.set_dlpf(TARGET_DLPF) {
+        return Err(SampleTimingFailure::new(
+            SampleTimingError::DlpfWrite,
+            None,
+            None,
+        ));
+    }
+    let dlpf = device
+        .dlpf()
+        .ok_or_else(|| SampleTimingFailure::new(SampleTimingError::DlpfRead, None, None))?;
+    if dlpf != TARGET_DLPF {
+        return Err(SampleTimingFailure::new(
+            SampleTimingError::DlpfMismatch,
+            Some(dlpf),
+            None,
+        ));
+    }
+    if !device.set_sample_rate_divider(TARGET_SMPLRT_DIV) {
+        return Err(SampleTimingFailure::new(
+            SampleTimingError::DividerWrite,
+            Some(dlpf),
+            None,
+        ));
+    }
+    let divider = device
+        .sample_rate_divider()
+        .ok_or(SampleTimingFailure::new(
+            SampleTimingError::DividerRead,
+            Some(dlpf),
+            None,
+        ))?;
+    if divider != TARGET_SMPLRT_DIV {
+        return Err(SampleTimingFailure::new(
+            SampleTimingError::DividerMismatch,
+            Some(dlpf),
+            Some(divider),
+        ));
+    }
+    let rate_hz = dlpf.sample_rate_hz(divider);
+    if !rate_hz.is_finite()
+        || rate_hz <= 0.0
+        || (rate_hz - EXPECTED_NOMINAL_SAMPLE_RATE_HZ).abs() > NOMINAL_RATE_COMPARISON_EPSILON_HZ
+    {
+        return Err(SampleTimingFailure::new(
+            SampleTimingError::InvalidRate,
+            Some(dlpf),
+            Some(divider),
+        ));
+    }
+    Ok(VerifiedSampleTiming {
+        dlpf,
+        divider,
+        rate_hz,
+    })
+}
+
+fn stream_startup_allowed(final_interrupts_zero: bool, timing_registers_confirmed: bool) -> bool {
+    final_interrupts_zero && timing_registers_confirmed
+}
+
+fn calculated_rate_valid(rate_hz: Option<f32>) -> bool {
+    rate_hz
+        .map(|rate| rate.is_finite() && rate > 0.0)
+        .unwrap_or(false)
+}
+
+fn calculated_rate_approx_target(rate_hz: Option<f32>) -> bool {
+    calculated_rate_valid(rate_hz)
+        && (rate_hz.unwrap_or_default() - EXPECTED_NOMINAL_SAMPLE_RATE_HZ).abs()
+            <= NOMINAL_RATE_COMPARISON_EPSILON_HZ
+}
+
 struct HexOpt(Option<u8>);
 struct U16Opt(Option<u16>);
+struct U8Opt(Option<u8>);
+struct DlpfOpt(Option<Dlpf>);
 
 impl fmt::Display for HexOpt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -192,6 +352,24 @@ impl fmt::Display for U16Opt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
             Some(value) => write!(f, "{}", value),
+            None => f.write_str("unreadable"),
+        }
+    }
+}
+
+impl fmt::Display for U8Opt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(value) => write!(f, "{}", value),
+            None => f.write_str("unreadable"),
+        }
+    }
+}
+
+impl fmt::Display for DlpfOpt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(value) => write!(f, "{:?}", value),
             None => f.write_str("unreadable"),
         }
     }
@@ -229,6 +407,9 @@ fn main() -> ! {
         XCL_PIN_NAME,
         AD0_PIN_NAME,
         INT_PIN_NAME
+    );
+    println!(
+        "target_sensor_sample_rate_hz=200.0 raw_stream_period_ms=100 acquisition_mode=periodic_snapshot"
     );
 
     let scl_probe = Input::new(
@@ -282,13 +463,17 @@ fn main() -> ! {
     let i2c = high_mpu.release();
     let mut mpu = Mpu6050::new(i2c, Address::Ad0Low);
     log_verification_summary(primary_probe);
-    let interrupts_disabled = run_advanced_validation(&mut mpu, &delay, MPU_ADDR_AD0_LOW);
+    let validation = run_advanced_validation(&mut mpu, &delay, MPU_ADDR_AD0_LOW);
+    let startup_ready = stream_startup_allowed(
+        validation.interrupt_state_confirmed_zero,
+        validation.timing_registers_confirmed,
+    );
     println!(
-        "imu_interrupt_policy=explicit_opt_in sources_disabled={} status_polling=off",
-        interrupts_disabled
+        "imu_interrupt_policy=explicit_opt_in sources_disabled={} timing_registers_confirmed={} status_polling=off",
+        validation.interrupt_state_confirmed_zero, validation.timing_registers_confirmed
     );
 
-    if interrupts_disabled {
+    if startup_ready {
         println!(
             "Repeating raw read from 0x68 every {}ms",
             RAW_STREAM_PERIOD_MS
@@ -316,68 +501,146 @@ fn main() -> ! {
 type BoardMpu<'a> = Mpu6050<I2c<'a, esp_hal::Blocking>>;
 
 #[cfg(target_arch = "riscv32")]
-fn run_advanced_validation(mpu: &mut BoardMpu<'_>, delay: &Delay, address: u8) -> bool {
+impl SampleTimingDevice for BoardMpu<'_> {
+    fn set_dlpf(&mut self, dlpf: Dlpf) -> bool {
+        Mpu6050::set_dlpf(self, dlpf).is_ok()
+    }
+    fn dlpf(&mut self) -> Option<Dlpf> {
+        Mpu6050::dlpf(self).ok()
+    }
+    fn set_sample_rate_divider(&mut self, divider: u8) -> bool {
+        Mpu6050::set_sample_rate_divider(self, divider).is_ok()
+    }
+    fn sample_rate_divider(&mut self) -> Option<u8> {
+        Mpu6050::sample_rate_divider(self).ok()
+    }
+}
+
+#[cfg(target_arch = "riscv32")]
+fn run_advanced_validation(
+    mpu: &mut BoardMpu<'_>,
+    delay: &Delay,
+    address: u8,
+) -> AdvancedValidationResult {
     println!("advanced_validation_begin");
-    let initial_zero = reset_wake_configure(mpu, delay, address);
-    let final_zero = if initial_zero {
+    let (initial_zero, timing_registers_confirmed) = reset_wake_configure(mpu, delay, address);
+    let interrupt_state_confirmed_zero = if initial_zero && timing_registers_confirmed {
         validate_scale_registers(mpu, address);
         validate_self_test_coarse(mpu, delay, address);
         validate_fifo_timing(mpu, delay, address);
         validate_int_status(mpu, delay, address)
     } else {
-        false
+        initial_zero
     };
     println!("advanced_validation_end");
-    final_zero
+    AdvancedValidationResult {
+        interrupt_state_confirmed_zero,
+        timing_registers_confirmed,
+    }
 }
 
 #[cfg(target_arch = "riscv32")]
-fn reset_wake_configure(mpu: &mut BoardMpu<'_>, delay: &Delay, _address: u8) -> bool {
+fn reset_wake_configure(mpu: &mut BoardMpu<'_>, delay: &Delay, _address: u8) -> (bool, bool) {
     println!("advanced reset_wake_begin");
     let reset_ok = mpu.reset().is_ok();
     delay.delay_millis(100);
     let wake_ok = mpu.wake().is_ok();
     delay.delay_millis(20);
-    let disable_write_ok = mpu.disable_all_interrupts().is_ok();
+    let int_disable_write_ok = mpu.disable_all_interrupts().is_ok();
     let interrupt_enable = mpu.interrupt_enable().ok();
-    let readback_ok = interrupt_enable.is_some();
-    let data_ready = interrupt_enable
+    let int_readback_ok = interrupt_enable.is_some();
+    let int_data_ready = interrupt_enable
         .map(|value| value.data_ready())
         .unwrap_or(false);
-    let fifo_overflow = interrupt_enable
+    let int_fifo_overflow = interrupt_enable
         .map(|value| value.fifo_overflow())
         .unwrap_or(false);
-    let none_enabled = interrupt_enable
+    let int_none_enabled = interrupt_enable
         .map(|value| value.none_enabled())
         .unwrap_or(false);
-    let confirmed_zero = readback_ok && none_enabled;
-    let config_ok = false;
-    let sample_ok = false;
-    let accel_ok = confirmed_zero && mpu.set_accel_range(AccelRange::G2).is_ok();
-    let gyro_ok = confirmed_zero && mpu.set_gyro_range(GyroRange::Dps250).is_ok();
-    let pwr = None;
-    let config = None;
-    let smplrt = None;
+    let interrupt_enable_confirmed_zero = int_readback_ok && int_none_enabled;
+    let configuration_prerequisites_confirmed =
+        reset_ok && wake_ok && interrupt_enable_confirmed_zero;
+    let timing = configuration_prerequisites_confirmed.then(|| configure_sample_timing(mpu));
+    let timing_registers_confirmed = matches!(timing, Some(Ok(_)));
+    let timing_error = timing
+        .as_ref()
+        .and_then(|result| result.as_ref().err())
+        .copied();
+    let dlpf = timing.as_ref().and_then(|result| match result {
+        Ok(value) => Some(value.dlpf),
+        Err(failure) => failure.dlpf,
+    });
+    let divider = timing.as_ref().and_then(|result| match result {
+        Ok(value) => Some(value.divider),
+        Err(failure) => failure.divider,
+    });
+    let rate_hz = dlpf
+        .zip(divider)
+        .map(|(dlpf, divider)| dlpf.sample_rate_hz(divider));
+    let calculated_rate_valid = calculated_rate_valid(rate_hz);
+    let calculated_rate_approx_target = calculated_rate_approx_target(rate_hz);
+    let timing_error = timing_error.map(|failure| failure.error);
+    let progress = timing_error.map_or(7, SampleTimingError::progress);
+    let dlpf_write_attempted = timing.is_some();
+    let dlpf_write_ok = dlpf_write_attempted && progress >= 1;
+    let dlpf_read_attempted = dlpf_write_ok;
+    let dlpf_read_ok = dlpf_read_attempted && progress >= 2;
+    let dlpf_match = dlpf_read_ok && progress >= 3;
+    let divider_write_attempted = dlpf_match;
+    let divider_write_ok = divider_write_attempted && progress >= 4;
+    let divider_read_attempted = divider_write_ok;
+    let divider_read_ok = divider_read_attempted && progress >= 5;
+    let divider_match = divider_read_ok && progress >= 6;
+    let accel_cfg_ok = timing_registers_confirmed && mpu.set_accel_range(AccelRange::G2).is_ok();
+    let gyro_cfg_ok = timing_registers_confirmed && mpu.set_gyro_range(GyroRange::Dps250).is_ok();
+    let failure_stage =
+        timing_error
+            .map(SampleTimingError::as_str)
+            .unwrap_or(if timing.is_some() {
+                "none"
+            } else {
+                "dlpf_write_not_attempted"
+            });
     println!(
-        "advanced reset_wake reset_ok={} wake_ok={} int_disable_write_ok={} int_readback_ok={} int_data_ready={} int_fifo_overflow={} int_none_enabled={} int_confirmed_zero={} config_ok={} sample_ok={} accel_cfg_ok={} gyro_cfg_ok={} pwr_mgmt_1={} config={} smplrt_div={}",
+        "advanced reset_wake reset_ok={} wake_ok={} int_disable_write_ok={} int_readback_ok={} int_data_ready={} int_fifo_overflow={} int_none_enabled={} int_confirmed_zero={} configuration_prerequisites_confirmed={} dlpf_write_attempted={} dlpf_write_ok={} dlpf_readback_attempted={} dlpf_readback_ok={} dlpf_match={} dlpf={} sample_divider_write_attempted={} sample_divider_write_ok={} sample_divider_readback_attempted={} sample_divider_readback_ok={} sample_divider_match={} sample_rate_divider={} calculated_sample_rate_hz={:.1} calculated_sample_rate_valid={} calculated_sample_rate_approx_target={} timing_failure_stage={} timing_registers_confirmed={} accel_cfg_ok={} gyro_cfg_ok={}",
         reset_ok,
         wake_ok,
-        disable_write_ok,
-        readback_ok,
-        data_ready,
-        fifo_overflow,
-        none_enabled,
-        confirmed_zero,
-        config_ok,
-        sample_ok,
-        accel_ok,
-        gyro_ok,
-        fmt_opt_hex(pwr),
-        fmt_opt_hex(config),
-        fmt_opt_hex(smplrt)
+        int_disable_write_ok,
+        int_readback_ok,
+        int_data_ready,
+        int_fifo_overflow,
+        int_none_enabled,
+        interrupt_enable_confirmed_zero,
+        configuration_prerequisites_confirmed,
+        dlpf_write_attempted,
+        dlpf_write_ok,
+        dlpf_read_attempted,
+        dlpf_read_ok,
+        dlpf_match,
+        DlpfOpt(dlpf),
+        divider_write_attempted,
+        divider_write_ok,
+        divider_read_attempted,
+        divider_read_ok,
+        divider_match,
+        U8Opt(divider),
+        rate_hz.unwrap_or(f32::NAN),
+        calculated_rate_valid,
+        calculated_rate_approx_target,
+        failure_stage,
+        timing_registers_confirmed,
+        accel_cfg_ok,
+        gyro_cfg_ok
     );
+    if let Some(Ok(verified_timing)) = timing {
+        println!(
+            "configured_nominal_sample_rate_hz={:.1}",
+            verified_timing.rate_hz
+        );
+    }
     println!("advanced reset_wake_end");
-    confirmed_zero
+    (interrupt_enable_confirmed_zero, timing_registers_confirmed)
 }
 
 #[cfg(target_arch = "riscv32")]
@@ -893,7 +1156,6 @@ fn crc16_ccitt_false(data: &[u8]) -> u16 {
     crc
 }
 
-#[cfg(target_arch = "riscv32")]
 fn accel_range_from_setting(setting: u8) -> AccelRange {
     match setting {
         0 => AccelRange::G2,
@@ -903,7 +1165,6 @@ fn accel_range_from_setting(setting: u8) -> AccelRange {
     }
 }
 
-#[cfg(target_arch = "riscv32")]
 fn gyro_range_from_setting(setting: u8) -> GyroRange {
     match setting {
         0 => GyroRange::Dps250,
@@ -951,4 +1212,221 @@ fn fmt_opt_hex(value: Option<u8>) -> HexOpt {
 
 fn fmt_opt_u16(value: Option<u16>) -> U16Opt {
     U16Opt(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum TimingCall {
+        SetDlpf,
+        ReadDlpf,
+        SetDivider,
+        ReadDivider,
+    }
+    struct FakeTimingDevice {
+        dlpf_write_ok: bool,
+        dlpf_readback: Option<Dlpf>,
+        divider_write_ok: bool,
+        divider_readback: Option<u8>,
+        calls: Vec<TimingCall>,
+    }
+
+    impl SampleTimingDevice for FakeTimingDevice {
+        fn set_dlpf(&mut self, value: Dlpf) -> bool {
+            assert_eq!(value, TARGET_DLPF);
+            self.calls.push(TimingCall::SetDlpf);
+            self.dlpf_write_ok
+        }
+        fn dlpf(&mut self) -> Option<Dlpf> {
+            self.calls.push(TimingCall::ReadDlpf);
+            self.dlpf_readback
+        }
+        fn set_sample_rate_divider(&mut self, value: u8) -> bool {
+            assert_eq!(value, TARGET_SMPLRT_DIV);
+            self.calls.push(TimingCall::SetDivider);
+            self.divider_write_ok
+        }
+        fn sample_rate_divider(&mut self) -> Option<u8> {
+            self.calls.push(TimingCall::ReadDivider);
+            self.divider_readback
+        }
+    }
+
+    fn assert_failure(
+        device: FakeTimingDevice,
+        error: SampleTimingError,
+        readbacks: (Option<Dlpf>, Option<u8>),
+        calls: Vec<TimingCall>,
+    ) {
+        let mut device = device;
+        let failure = configure_sample_timing(&mut device).unwrap_err();
+        assert_eq!(
+            (failure.error, failure.dlpf, failure.divider),
+            (error, readbacks.0, readbacks.1)
+        );
+        assert_eq!(device.calls, calls);
+    }
+    #[test]
+    fn target_timing_period_and_ranges_are_unchanged() {
+        assert_eq!(TARGET_DLPF, Dlpf::Cfg2);
+        assert_eq!(TARGET_SMPLRT_DIV, 4);
+        assert!(
+            (TARGET_DLPF.sample_rate_hz(TARGET_SMPLRT_DIV) - EXPECTED_NOMINAL_SAMPLE_RATE_HZ).abs()
+                <= NOMINAL_RATE_COMPARISON_EPSILON_HZ
+        );
+        assert_eq!(RAW_STREAM_PERIOD_MS, 100);
+        assert_eq!(accel_range_from_setting(0), AccelRange::G2);
+        assert_eq!(gyro_range_from_setting(0), GyroRange::Dps250);
+        assert!(calculated_rate_valid(Some(200.0)));
+        assert!(calculated_rate_approx_target(Some(200.0)));
+        assert!(!calculated_rate_valid(Some(f32::NAN)));
+        assert!(!calculated_rate_valid(Some(f32::INFINITY)));
+        assert!(!calculated_rate_valid(Some(0.0)));
+        assert!(!calculated_rate_valid(None));
+        assert!(!calculated_rate_approx_target(Some(199.0)));
+    }
+    #[test]
+    fn configure_sample_timing_succeeds_in_order() {
+        let mut device = FakeTimingDevice {
+            dlpf_write_ok: true,
+            dlpf_readback: Some(Dlpf::Cfg2),
+            divider_write_ok: true,
+            divider_readback: Some(4),
+            calls: Vec::new(),
+        };
+        assert_eq!(
+            configure_sample_timing(&mut device),
+            Ok(VerifiedSampleTiming {
+                dlpf: Dlpf::Cfg2,
+                divider: 4,
+                rate_hz: 200.0
+            })
+        );
+        assert_eq!(
+            device.calls,
+            vec![
+                TimingCall::SetDlpf,
+                TimingCall::ReadDlpf,
+                TimingCall::SetDivider,
+                TimingCall::ReadDivider
+            ]
+        );
+    }
+    #[test]
+    fn configure_sample_timing_reports_operation_failures_and_mismatches() {
+        let cases = [
+            (
+                false,
+                None,
+                false,
+                None,
+                SampleTimingError::DlpfWrite,
+                (None, None),
+                vec![TimingCall::SetDlpf],
+            ),
+            (
+                true,
+                None,
+                false,
+                None,
+                SampleTimingError::DlpfRead,
+                (None, None),
+                vec![TimingCall::SetDlpf, TimingCall::ReadDlpf],
+            ),
+            (
+                true,
+                Some(Dlpf::Cfg3),
+                false,
+                None,
+                SampleTimingError::DlpfMismatch,
+                (Some(Dlpf::Cfg3), None),
+                vec![TimingCall::SetDlpf, TimingCall::ReadDlpf],
+            ),
+            (
+                true,
+                Some(Dlpf::Cfg2),
+                false,
+                None,
+                SampleTimingError::DividerWrite,
+                (Some(Dlpf::Cfg2), None),
+                vec![
+                    TimingCall::SetDlpf,
+                    TimingCall::ReadDlpf,
+                    TimingCall::SetDivider,
+                ],
+            ),
+            (
+                true,
+                Some(Dlpf::Cfg2),
+                true,
+                None,
+                SampleTimingError::DividerRead,
+                (Some(Dlpf::Cfg2), None),
+                vec![
+                    TimingCall::SetDlpf,
+                    TimingCall::ReadDlpf,
+                    TimingCall::SetDivider,
+                    TimingCall::ReadDivider,
+                ],
+            ),
+            (
+                true,
+                Some(Dlpf::Cfg2),
+                true,
+                Some(5),
+                SampleTimingError::DividerMismatch,
+                (Some(Dlpf::Cfg2), Some(5)),
+                vec![
+                    TimingCall::SetDlpf,
+                    TimingCall::ReadDlpf,
+                    TimingCall::SetDivider,
+                    TimingCall::ReadDivider,
+                ],
+            ),
+        ];
+        for (
+            dlpf_write_ok,
+            dlpf_readback,
+            divider_write_ok,
+            divider_readback,
+            error,
+            readbacks,
+            calls,
+        ) in cases
+        {
+            assert_failure(
+                FakeTimingDevice {
+                    dlpf_write_ok,
+                    dlpf_readback,
+                    divider_write_ok,
+                    divider_readback,
+                    calls: Vec::new(),
+                },
+                error,
+                readbacks,
+                calls,
+            );
+        }
+    }
+    #[test]
+    fn stream_startup_requires_interrupt_zero_and_verified_timing() {
+        let ok: Option<Result<VerifiedSampleTiming, SampleTimingFailure>> =
+            Some(Ok(VerifiedSampleTiming {
+                dlpf: Dlpf::Cfg2,
+                divider: 4,
+                rate_hz: 200.0,
+            }));
+        let failed: Option<Result<VerifiedSampleTiming, SampleTimingFailure>> = Some(Err(
+            SampleTimingFailure::new(SampleTimingError::DlpfWrite, None, None),
+        ));
+        let skipped: Option<Result<VerifiedSampleTiming, SampleTimingFailure>> = None;
+        assert!(!stream_startup_allowed(false, matches!(ok, Some(Ok(_)))));
+        assert!(!stream_startup_allowed(true, matches!(failed, Some(Ok(_)))));
+        assert!(!stream_startup_allowed(
+            true,
+            matches!(skipped, Some(Ok(_)))
+        ));
+        assert!(stream_startup_allowed(true, matches!(ok, Some(Ok(_)))));
+    }
 }
