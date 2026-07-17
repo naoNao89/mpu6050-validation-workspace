@@ -3,19 +3,25 @@ use embedded_hal::i2c::I2c;
 use crate::{Mpu6050, registers};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The complete `INT_ENABLE` register state.
 pub struct InterruptEnable {
     bits: u8,
 }
 
 impl InterruptEnable {
+    /// Returns whether the data-ready interrupt is enabled.
     pub const fn data_ready(self) -> bool {
         self.bits & registers::INT_ENABLE_DATA_RDY != 0
     }
 
+    /// Returns whether the FIFO-overflow interrupt is enabled.
     pub const fn fifo_overflow(self) -> bool {
         self.bits & registers::INT_ENABLE_FIFO_OFLOW != 0
     }
 
+    /// Returns true only when the complete `INT_ENABLE` byte is zero.
+    ///
+    /// Unsupported nonzero bits make this false.
     pub const fn none_enabled(self) -> bool {
         self.bits == 0
     }
@@ -40,12 +46,13 @@ impl<I2C> Mpu6050<I2C>
 where
     I2C: I2c,
 {
+    /// Reads the complete `INT_ENABLE` register state.
     pub fn interrupt_enable(&mut self) -> Result<InterruptEnable, I2C::Error> {
         self.read_register(registers::INT_ENABLE)
             .map(|bits| InterruptEnable { bits })
     }
 
-    /// Disables all interrupt sources in the `INT_ENABLE` register.
+    /// Disables all interrupt sources by writing zero to `INT_ENABLE`.
     pub fn disable_all_interrupts(&mut self) -> Result<(), I2C::Error> {
         self.write_register(registers::INT_ENABLE, 0)
     }
@@ -211,6 +218,7 @@ mod tests {
         assert!(fifo_overflow.fifo_overflow());
         assert!(mpu.interrupt_enable().unwrap().none_enabled());
         assert!(!mpu.interrupt_enable().unwrap().none_enabled());
+        assert!(mpu.release().operations.is_empty());
     }
 
     #[test]
@@ -223,6 +231,7 @@ mod tests {
 
         assert_eq!(mpu.interrupt_enable(), Err(FakeError::Bus));
         assert_eq!(mpu.disable_all_interrupts(), Err(FakeError::Bus));
+        assert!(mpu.release().operations.is_empty());
     }
 
     #[test]
@@ -246,6 +255,7 @@ mod tests {
 
         assert_eq!(mpu.enable_data_ready_interrupt(), Ok(()));
         assert_eq!(mpu.enable_fifo_overflow_interrupt(), Ok(()));
+        assert!(mpu.release().operations.is_empty());
     }
 
     #[test]
@@ -260,5 +270,6 @@ mod tests {
 
         assert!(status.data_ready());
         assert!(status.fifo_overflow());
+        assert!(mpu.release().operations.is_empty());
     }
 }

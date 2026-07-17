@@ -306,7 +306,10 @@ fn main() -> ! {
         }
     }
 
-    loop {}
+    println!("raw_stream_blocked");
+    loop {
+        delay.delay_millis(RAW_STREAM_PERIOD_MS);
+    }
 }
 
 #[cfg(target_arch = "riscv32")]
