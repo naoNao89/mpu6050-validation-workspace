@@ -1,8 +1,8 @@
 use mpu6050_driver::{
     ACCEL_LSB_PER_G_2G, AccelRange, Address, Dlpf, DlpfReadError, FIFO_ACCEL_GYRO_FRAME_BYTES,
-    FifoReadDiagnostics, GYRO_LSB_PER_DPS_250DPS, GyroRange, Identity, IntStatus, Mpu6050,
-    RawAccelGyroTemp, RawReadOutcome, RawRetryPolicy, RawSampleSuspicion, TEMP_LSB_PER_DEG_C,
-    TEMP_OFFSET_DEG_C, raw_to_imu_sample,
+    FifoReadDiagnostics, GYRO_LSB_PER_DPS_250DPS, GyroRange, Identity, IntStatus, InterruptEnable,
+    Mpu6050, RawAccelGyroTemp, RawReadOutcome, RawRetryPolicy, RawSampleSuspicion,
+    TEMP_LSB_PER_DEG_C, TEMP_OFFSET_DEG_C, raw_to_imu_sample,
 };
 
 struct ApiI2c;
@@ -94,6 +94,8 @@ fn crate_root_public_api_still_imports() {
 
     fn takes_int_status(_status: IntStatus) {}
     let _ = takes_int_status;
+    fn takes_interrupt_enable(_enable: InterruptEnable) {}
+    let _ = takes_interrupt_enable;
 
     // Compile-time guards for the externally visible method signatures.
     // These methods are not executed; behavioral I2C tests live with the driver.
@@ -104,4 +106,13 @@ fn crate_root_public_api_still_imports() {
         Mpu6050::<ApiI2c>::set_sample_rate_divider;
     let _: fn(&mut Mpu6050<ApiI2c>) -> Result<u8, ApiError> =
         Mpu6050::<ApiI2c>::sample_rate_divider;
+    let _: fn(&mut Mpu6050<ApiI2c>) -> Result<InterruptEnable, ApiError> =
+        Mpu6050::<ApiI2c>::interrupt_enable;
+    let _: fn(&mut Mpu6050<ApiI2c>) -> Result<(), ApiError> =
+        Mpu6050::<ApiI2c>::disable_all_interrupts;
+    let _: fn(&mut Mpu6050<ApiI2c>) -> Result<(), ApiError> =
+        Mpu6050::<ApiI2c>::enable_data_ready_interrupt;
+    let _: fn(&mut Mpu6050<ApiI2c>) -> Result<(), ApiError> =
+        Mpu6050::<ApiI2c>::enable_fifo_overflow_interrupt;
+    let _: fn(&mut Mpu6050<ApiI2c>) -> Result<IntStatus, ApiError> = Mpu6050::<ApiI2c>::int_status;
 }
