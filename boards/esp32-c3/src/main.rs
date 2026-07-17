@@ -24,10 +24,10 @@ use esp_hal::{
     main,
     time::{Duration, Instant, Rate},
 };
-#[cfg(target_arch = "riscv32")]
-use esp_println::println;
 #[cfg(all(feature = "binary-frames", target_arch = "riscv32"))]
 use esp_println::Printer;
+#[cfg(target_arch = "riscv32")]
+use esp_println::println;
 use mpu6050_driver::{AccelRange, Dlpf, GyroRange, Identity};
 #[cfg(target_arch = "riscv32")]
 use mpu6050_driver::{Address, Mpu6050, RawAccelGyroTemp, RawReadOutcome, RawRetryPolicy};
@@ -251,7 +251,7 @@ trait SampleTimingDevice {
 #[derive(Debug, Clone, Copy)]
 struct AdvancedValidationResult {
     interrupt_state_confirmed_zero: bool,
-    timing_confirmed: bool,
+    timing_registers_confirmed: bool,
 }
 
 fn configure_sample_timing(
@@ -313,8 +313,8 @@ fn configure_sample_timing(
     })
 }
 
-fn stream_startup_allowed(final_interrupts_zero: bool, timing_confirmed: bool) -> bool {
-    final_interrupts_zero && timing_confirmed
+fn stream_startup_allowed(final_interrupts_zero: bool, timing_registers_confirmed: bool) -> bool {
+    final_interrupts_zero && timing_registers_confirmed
 }
 
 struct HexOpt(Option<u8>);
@@ -449,11 +449,11 @@ fn main() -> ! {
     let validation = run_advanced_validation(&mut mpu, &delay, MPU_ADDR_AD0_LOW);
     let startup_ready = stream_startup_allowed(
         validation.interrupt_state_confirmed_zero,
-        validation.timing_confirmed,
+        validation.timing_registers_confirmed,
     );
     println!(
-        "imu_interrupt_policy=explicit_opt_in sources_disabled={} timing_confirmed={} status_polling=off",
-        validation.interrupt_state_confirmed_zero, validation.timing_confirmed
+        "imu_interrupt_policy=explicit_opt_in sources_disabled={} timing_registers_confirmed={} status_polling=off",
+        validation.interrupt_state_confirmed_zero, validation.timing_registers_confirmed
     );
 
     if startup_ready {
@@ -506,8 +506,8 @@ fn run_advanced_validation(
     address: u8,
 ) -> AdvancedValidationResult {
     println!("advanced_validation_begin");
-    let (initial_zero, timing_confirmed) = reset_wake_configure(mpu, delay, address);
-    let interrupt_state_confirmed_zero = if initial_zero && timing_confirmed {
+    let (initial_zero, timing_registers_confirmed) = reset_wake_configure(mpu, delay, address);
+    let interrupt_state_confirmed_zero = if initial_zero && timing_registers_confirmed {
         validate_scale_registers(mpu, address);
         validate_self_test_coarse(mpu, delay, address);
         validate_fifo_timing(mpu, delay, address);
@@ -518,7 +518,7 @@ fn run_advanced_validation(
     println!("advanced_validation_end");
     AdvancedValidationResult {
         interrupt_state_confirmed_zero,
-        timing_confirmed,
+        timing_registers_confirmed,
     }
 }
 
@@ -545,7 +545,7 @@ fn reset_wake_configure(mpu: &mut BoardMpu<'_>, delay: &Delay, _address: u8) -> 
     let configuration_prerequisites_confirmed =
         reset_ok && wake_ok && interrupt_enable_confirmed_zero;
     let timing = configuration_prerequisites_confirmed.then(|| configure_sample_timing(mpu));
-    let timing_confirmed = matches!(timing, Some(Ok(_)));
+    let timing_registers_confirmed = matches!(timing, Some(Ok(_)));
     let timing_error = timing
         .as_ref()
         .and_then(|result| result.as_ref().err())
@@ -573,8 +573,8 @@ fn reset_wake_configure(mpu: &mut BoardMpu<'_>, delay: &Delay, _address: u8) -> 
     let divider_read_attempted = divider_write_ok;
     let divider_read_ok = divider_read_attempted && progress >= 5;
     let divider_match = divider_read_ok && progress >= 6;
-    let accel_cfg_ok = timing_confirmed && mpu.set_accel_range(AccelRange::G2).is_ok();
-    let gyro_cfg_ok = timing_confirmed && mpu.set_gyro_range(GyroRange::Dps250).is_ok();
+    let accel_cfg_ok = timing_registers_confirmed && mpu.set_accel_range(AccelRange::G2).is_ok();
+    let gyro_cfg_ok = timing_registers_confirmed && mpu.set_gyro_range(GyroRange::Dps250).is_ok();
     let failure_stage =
         timing_error
             .map(SampleTimingError::as_str)
@@ -584,20 +584,41 @@ fn reset_wake_configure(mpu: &mut BoardMpu<'_>, delay: &Delay, _address: u8) -> 
                 "dlpf_write_not_attempted"
             });
     println!(
-        "advanced reset_wake reset_ok={} wake_ok={} int_disable_write_ok={} int_readback_ok={} int_data_ready={} int_fifo_overflow={} int_none_enabled={} int_confirmed_zero={} configuration_prerequisites_confirmed={} dlpf_write_attempted={} dlpf_write_ok={} dlpf_readback_attempted={} dlpf_readback_ok={} dlpf_match={} dlpf={} sample_divider_write_attempted={} sample_divider_write_ok={} sample_divider_readback_attempted={} sample_divider_readback_ok={} sample_divider_match={} sample_rate_divider={} sample_rate_hz={:.1} sample_rate_valid={} sample_rate_approx_200hz={} timing_failure_stage={} timing_confirmed={} accel_cfg_ok={} gyro_cfg_ok={}",
-        reset_ok, wake_ok, int_disable_write_ok, int_readback_ok, int_data_ready, int_fifo_overflow,
-        int_none_enabled, interrupt_enable_confirmed_zero, configuration_prerequisites_confirmed,
-        dlpf_write_attempted, dlpf_write_ok, dlpf_read_attempted, dlpf_read_ok, dlpf_match,
-        DlpfOpt(dlpf), divider_write_attempted, divider_write_ok,
-        divider_read_attempted, divider_read_ok, divider_match,
-        U8Opt(divider), rate_hz.unwrap_or(f32::NAN), rate_hz.is_some(), timing_confirmed, failure_stage, timing_confirmed,
-        accel_cfg_ok, gyro_cfg_ok
+        "advanced reset_wake reset_ok={} wake_ok={} int_disable_write_ok={} int_readback_ok={} int_data_ready={} int_fifo_overflow={} int_none_enabled={} int_confirmed_zero={} configuration_prerequisites_confirmed={} dlpf_write_attempted={} dlpf_write_ok={} dlpf_readback_attempted={} dlpf_readback_ok={} dlpf_match={} dlpf={} sample_divider_write_attempted={} sample_divider_write_ok={} sample_divider_readback_attempted={} sample_divider_readback_ok={} sample_divider_match={} sample_rate_divider={} calculated_sample_rate_hz={:.1} sample_rate_valid={} sample_rate_approx_200hz={} timing_failure_stage={} timing_registers_confirmed={} accel_cfg_ok={} gyro_cfg_ok={}",
+        reset_ok,
+        wake_ok,
+        int_disable_write_ok,
+        int_readback_ok,
+        int_data_ready,
+        int_fifo_overflow,
+        int_none_enabled,
+        interrupt_enable_confirmed_zero,
+        configuration_prerequisites_confirmed,
+        dlpf_write_attempted,
+        dlpf_write_ok,
+        dlpf_read_attempted,
+        dlpf_read_ok,
+        dlpf_match,
+        DlpfOpt(dlpf),
+        divider_write_attempted,
+        divider_write_ok,
+        divider_read_attempted,
+        divider_read_ok,
+        divider_match,
+        U8Opt(divider),
+        rate_hz.unwrap_or(f32::NAN),
+        rate_hz.is_some(),
+        timing_registers_confirmed,
+        failure_stage,
+        timing_registers_confirmed,
+        accel_cfg_ok,
+        gyro_cfg_ok
     );
-    if timing_confirmed {
+    if timing_registers_confirmed {
         println!("configured_sensor_sample_rate_hz=200.0");
     }
     println!("advanced reset_wake_end");
-    (interrupt_enable_confirmed_zero, timing_confirmed)
+    (interrupt_enable_confirmed_zero, timing_registers_confirmed)
 }
 
 #[cfg(target_arch = "riscv32")]
