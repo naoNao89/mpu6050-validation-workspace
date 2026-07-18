@@ -1,5 +1,5 @@
 #[cfg(target_arch = "riscv32")]
-use crate::acquisition::pending_snapshot;
+use crate::acquisition::{pending_snapshot, AcquisitionStats};
 #[cfg(target_arch = "riscv32")]
 use crate::startup::BoardMpu;
 #[cfg(all(not(feature = "binary-frames"), target_arch = "riscv32"))]
@@ -15,134 +15,21 @@ use mpu6050_driver::{RawAccelGyroTemp, RawReadOutcome, RawRetryPolicy};
 
 pub(crate) const RAW_EXAMPLE_LIMIT: u64 = 8;
 pub(crate) const SUMMARY_PERIOD_US: u64 = 1_000_000;
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct AcquisitionStats {
-    pub(crate) consumed: u64,
-    pub(crate) missed_or_coalesced_events: u64,
-    pub(crate) successful_samples: u64,
-    pub(crate) motion_i2c_errors: u64,
-    pub(crate) status_ack_i2c_errors: u64,
-    pub(crate) first_consumed_us: Option<u64>,
-    pub(crate) last_consumed_us: Option<u64>,
-    pub(crate) first_sample_us: Option<u64>,
-    pub(crate) last_sample_us: Option<u64>,
-    pub(crate) interval_count: u64,
-    pub(crate) interval_min_us: Option<u64>,
-    pub(crate) interval_max_us: Option<u64>,
-    interval_histogram: [u32; 128],
-}
-#[cfg(target_arch = "riscv32")]
-pub(crate) struct Telemetry {
-    pub(crate) stats: AcquisitionStats,
-    acquisition_start_us: u64,
-    last_summary_us: u64,
-}
 
 #[cfg(target_arch = "riscv32")]
-impl Telemetry {
-    pub(crate) fn start() -> Self {
-        let now = Instant::now().duration_since_epoch().as_micros() as u64;
-        Self {
-            stats: AcquisitionStats::default(),
-            acquisition_start_us: now,
-            last_summary_us: now,
-        }
-    }
-
-    pub(crate) fn maybe_log_raw_example(&self, raw: &RawAccelGyroTemp, consumed_timestamp_us: u64) {
-        if self.stats.successful_samples <= RAW_EXAMPLE_LIMIT {
-            let sample_timestamp_us = self.stats.last_sample_us.unwrap_or_default();
-            println!(
-                "RAW consumed_events={} accel=({}, {}, {}) temp_raw={} gyro=({}, {}, {}) consumed_timestamp_us={} sample_timestamp_us={}",
-                self.stats.consumed,
-                raw.accel[0],
-                raw.accel[1],
-                raw.accel[2],
-                raw.temp,
-                raw.gyro[0],
-                raw.gyro[1],
-                raw.gyro[2],
-                consumed_timestamp_us,
-                sample_timestamp_us
-            );
-        }
-    }
-
-    pub(crate) fn maybe_log_periodic_summary(&mut self) {
-        let now = Instant::now().duration_since_epoch().as_micros() as u64;
-        if now.saturating_sub(self.last_summary_us) >= SUMMARY_PERIOD_US {
-            log_acquisition_summary(&self.stats, self.acquisition_start_us, now);
-            self.last_summary_us = now;
-        }
-    }
-}
-impl Default for AcquisitionStats {
-    fn default() -> Self {
-        Self {
-            consumed: 0,
-            missed_or_coalesced_events: 0,
-            successful_samples: 0,
-            motion_i2c_errors: 0,
-            status_ack_i2c_errors: 0,
-            first_consumed_us: None,
-            last_consumed_us: None,
-            first_sample_us: None,
-            last_sample_us: None,
-            interval_count: 0,
-            interval_min_us: None,
-            interval_max_us: None,
-            interval_histogram: [0; 128],
-        }
-    }
-}
-impl AcquisitionStats {
-    pub(crate) fn consumed_batch(&mut self, count: u32, now: u64) {
-        self.consumed = self.consumed.saturating_add(count as u64);
-        self.missed_or_coalesced_events = self
-            .missed_or_coalesced_events
-            .saturating_add(count.saturating_sub(1) as u64);
-        self.first_consumed_us.get_or_insert(now);
-        self.last_consumed_us = Some(now);
-    }
-    pub(crate) fn sample(&mut self, now: u64) {
-        if let Some(previous) = self.last_sample_us {
-            let interval = now.saturating_sub(previous);
-            self.interval_count += 1;
-            self.interval_min_us = Some(
-                self.interval_min_us
-                    .map_or(interval, |value| value.min(interval)),
-            );
-            self.interval_max_us = Some(
-                self.interval_max_us
-                    .map_or(interval, |value| value.max(interval)),
-            );
-            let bin = ((interval / 100) as usize).min(127);
-            self.interval_histogram[bin] = self.interval_histogram[bin].saturating_add(1);
-        }
-        self.first_sample_us.get_or_insert(now);
-        self.last_sample_us = Some(now);
-        self.successful_samples += 1;
-    }
-    pub(crate) fn rate(count: u64, first: Option<u64>, last: Option<u64>) -> Option<f32> {
-        match (count, first, last) {
-            (2.., Some(first), Some(last)) if last > first => {
-                Some((count - 1) as f32 * 1_000_000.0 / (last - first) as f32)
-            }
-            _ => None,
-        }
-    }
-    pub(crate) fn interval_p50_us(&self) -> Option<u64> {
-        if self.interval_count == 0 {
-            return None;
-        }
-        let mut seen = 0u64;
-        for (bin, count) in self.interval_histogram.iter().enumerate() {
-            seen += *count as u64;
-            if seen * 2 >= self.interval_count {
-                return Some(bin as u64 * 100);
-            }
-        }
-        None
+pub(crate) fn maybe_log_raw_example(
+    stats: &AcquisitionStats,
+    raw: &RawAccelGyroTemp,
+    consumed_timestamp_us: u64,
+) {
+    if stats.successful_samples <= RAW_EXAMPLE_LIMIT {
+        let sample_timestamp_us = stats.last_sample_us.unwrap_or_default();
+        println!(
+            "RAW consumed_events={} accel=({}, {}, {}) temp_raw={} gyro=({}, {}, {}) consumed_timestamp_us={} sample_timestamp_us={}",
+            stats.consumed,
+            raw.accel[0], raw.accel[1], raw.accel[2], raw.temp, raw.gyro[0], raw.gyro[1],
+            raw.gyro[2], consumed_timestamp_us, sample_timestamp_us
+        );
     }
 }
 #[cfg(feature = "binary-frames")]
@@ -440,23 +327,4 @@ fn crc16_ccitt_false(data: &[u8]) -> u16 {
         }
     }
     crc
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn zero_and_one_sample_statistics_are_safe() {
-        let mut stats = AcquisitionStats::default();
-        assert_eq!(AcquisitionStats::rate(0, None, None), None);
-        assert_eq!(stats.interval_p50_us(), None);
-        stats.consumed_batch(1, 10);
-        stats.sample(10);
-        assert_eq!(
-            AcquisitionStats::rate(1, stats.first_sample_us, stats.last_sample_us),
-            None
-        );
-        assert_eq!(stats.interval_count, 0);
-        assert_eq!(stats.interval_p50_us(), None);
-    }
 }

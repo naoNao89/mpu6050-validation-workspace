@@ -21,7 +21,7 @@ use esp_hal::{
     delay::Delay,
     i2c::master::{BusTimeout, Config as I2cConfig, I2c, SoftwareTimeout},
     main,
-    time::{Duration, Rate},
+    time::{Duration, Instant, Rate},
 };
 #[cfg(target_arch = "riscv32")]
 use esp_println::println;
@@ -70,14 +70,20 @@ fn main() -> ! {
     startup::log_data_ready_startup(&conditions);
 
     if conditions.allows_acquisition() {
-        let mut telemetry = telemetry::Telemetry::start();
+        let mut stats = acquisition::AcquisitionStats::default();
+        let acquisition_start_us = Instant::now().duration_since_epoch().as_micros() as u64;
+        let mut last_summary_us = acquisition_start_us;
         loop {
-            if let Some(outcome) = acquisition::drain_pending(&mut mpu, &mut telemetry.stats) {
+            if let Some(outcome) = acquisition::drain_pending(&mut mpu, &mut stats) {
                 if let Some(raw) = outcome.sample {
-                    telemetry.maybe_log_raw_example(&raw, outcome.consumed_timestamp_us);
+                    telemetry::maybe_log_raw_example(&stats, &raw, outcome.consumed_timestamp_us);
                 }
             }
-            telemetry.maybe_log_periodic_summary();
+            let now = Instant::now().duration_since_epoch().as_micros() as u64;
+            if now.saturating_sub(last_summary_us) >= telemetry::SUMMARY_PERIOD_US {
+                telemetry::log_acquisition_summary(&stats, acquisition_start_us, now);
+                last_summary_us = now;
+            }
         }
     }
 
