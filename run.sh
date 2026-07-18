@@ -35,7 +35,7 @@ if [ "${NO_LOG:-0}" != "1" ] && [ -z "$LOG_FILE" ]; then
 fi
 
 echo "--- build release firmware for ${TARGET} ---"
-env -u RUSTFLAGS cargo build -p mpu6050-esp32c3-bringup --release --target "$TARGET"
+env -u RUSTFLAGS CARGO_TARGET_DIR=target cargo --config 'patch.crates-io.mpu6050-driver.path="crates/mpu6050-driver"' build --manifest-path boards/esp32-c3/Cargo.toml --release --target "$TARGET"
 
 if [ "${NO_FLASH:-0}" != "1" ]; then
   echo "--- flash ${PORT} ---"

@@ -96,6 +96,7 @@ fn crate_root_public_api_still_imports() {
     let _ = takes_int_status;
     fn takes_interrupt_enable(_enable: InterruptEnable) {}
     let _ = takes_interrupt_enable;
+    let _: fn(InterruptEnable) -> bool = InterruptEnable::only_data_ready;
 
     // Compile-time guards for the externally visible method signatures.
     // These methods are not executed; behavioral I2C tests live with the driver.
