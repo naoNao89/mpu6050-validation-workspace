@@ -1,13 +1,10 @@
 #[cfg(target_arch = "riscv32")]
 use crate::board::{
-    AD0_PIN_NAME, BOARD_NAME, GND_PIN_NAME, INT_PIN_NAME, SCL_PIN_NAME, SDA_PIN_NAME, VCC_PIN_NAME,
-    XCL_PIN_NAME, XDA_PIN_NAME,
+    AD0_PIN_NAME, Ad0Pin, BOARD_NAME, GND_PIN_NAME, INT_PIN_NAME, SCL_PIN_NAME, SDA_PIN_NAME,
+    SclPin, SdaPin, VCC_PIN_NAME, XCL_PIN_NAME, XDA_PIN_NAME,
 };
 #[cfg(target_arch = "riscv32")]
-use esp_hal::{
-    gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
-    peripherals::{GPIO0, GPIO1, GPIO5},
-};
+use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
 #[cfg(target_arch = "riscv32")]
 use esp_println::println;
 
@@ -64,7 +61,7 @@ pub(crate) fn inspect_boot() {
 }
 
 #[cfg(target_arch = "riscv32")]
-pub(crate) fn probe_pre_i2c_idle(scl_pin: &mut GPIO0<'static>, sda_pin: &mut GPIO1<'static>) {
+pub(crate) fn probe_pre_i2c_idle(scl_pin: &mut SclPin, sda_pin: &mut SdaPin) {
     let scl_probe = Input::new(
         scl_pin.reborrow(),
         InputConfig::default().with_pull(Pull::Up),
@@ -83,7 +80,7 @@ pub(crate) fn probe_pre_i2c_idle(scl_pin: &mut GPIO0<'static>, sda_pin: &mut GPI
 }
 
 #[cfg(target_arch = "riscv32")]
-pub(crate) fn drive_ad0_low(ad0_pin: GPIO5<'static>) -> Output<'static> {
+pub(crate) fn drive_ad0_low(ad0_pin: Ad0Pin) -> Output<'static> {
     let ad0 = Output::new(ad0_pin, Level::Low, OutputConfig::default());
     println!(
         "AD0 driven LOW on {}; expected 7-bit address is 0x68",

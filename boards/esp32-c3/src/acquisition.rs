@@ -1,7 +1,9 @@
 #[cfg(target_arch = "riscv32")]
+use crate::board::IntPin;
+#[cfg(target_arch = "riscv32")]
 use esp_hal::{
     gpio::{Event, Input, InputConfig, Io, Pull},
-    peripherals::{GPIO6, IO_MUX},
+    peripherals::IO_MUX,
     time::Instant,
 };
 #[cfg(target_arch = "riscv32")]
@@ -40,10 +42,18 @@ pub(crate) struct AcquisitionStats {
 impl Default for AcquisitionStats {
     fn default() -> Self {
         Self {
-            consumed: 0, missed_or_coalesced_events: 0, successful_samples: 0,
-            motion_i2c_errors: 0, status_ack_i2c_errors: 0, first_consumed_us: None,
-            last_consumed_us: None, first_sample_us: None, last_sample_us: None,
-            interval_count: 0, interval_min_us: None, interval_max_us: None,
+            consumed: 0,
+            missed_or_coalesced_events: 0,
+            successful_samples: 0,
+            motion_i2c_errors: 0,
+            status_ack_i2c_errors: 0,
+            first_consumed_us: None,
+            last_consumed_us: None,
+            first_sample_us: None,
+            last_sample_us: None,
+            interval_count: 0,
+            interval_min_us: None,
+            interval_max_us: None,
             interval_histogram: [0; 128],
         }
     }
@@ -52,7 +62,9 @@ impl Default for AcquisitionStats {
 impl AcquisitionStats {
     pub(crate) fn consumed_batch(&mut self, count: u32, now: u64) {
         self.consumed = self.consumed.saturating_add(count as u64);
-        self.missed_or_coalesced_events = self.missed_or_coalesced_events.saturating_add(count.saturating_sub(1) as u64);
+        self.missed_or_coalesced_events = self
+            .missed_or_coalesced_events
+            .saturating_add(count.saturating_sub(1) as u64);
         self.first_consumed_us.get_or_insert(now);
         self.last_consumed_us = Some(now);
     }
@@ -60,8 +72,14 @@ impl AcquisitionStats {
         if let Some(previous) = self.last_sample_us {
             let interval = now.saturating_sub(previous);
             self.interval_count += 1;
-            self.interval_min_us = Some(self.interval_min_us.map_or(interval, |value| value.min(interval)));
-            self.interval_max_us = Some(self.interval_max_us.map_or(interval, |value| value.max(interval)));
+            self.interval_min_us = Some(
+                self.interval_min_us
+                    .map_or(interval, |value| value.min(interval)),
+            );
+            self.interval_max_us = Some(
+                self.interval_max_us
+                    .map_or(interval, |value| value.max(interval)),
+            );
             let bin = ((interval / 100) as usize).min(127);
             self.interval_histogram[bin] = self.interval_histogram[bin].saturating_add(1);
         }
@@ -71,16 +89,22 @@ impl AcquisitionStats {
     }
     pub(crate) fn rate(count: u64, first: Option<u64>, last: Option<u64>) -> Option<f32> {
         match (count, first, last) {
-            (2.., Some(first), Some(last)) if last > first => Some((count - 1) as f32 * 1_000_000.0 / (last - first) as f32),
+            (2.., Some(first), Some(last)) if last > first => {
+                Some((count - 1) as f32 * 1_000_000.0 / (last - first) as f32)
+            }
             _ => None,
         }
     }
     pub(crate) fn interval_p50_us(&self) -> Option<u64> {
-        if self.interval_count == 0 { return None; }
+        if self.interval_count == 0 {
+            return None;
+        }
         let mut seen = 0u64;
         for (bin, count) in self.interval_histogram.iter().enumerate() {
             seen += *count as u64;
-            if seen * 2 >= self.interval_count { return Some(bin as u64 * 100); }
+            if seen * 2 >= self.interval_count {
+                return Some(bin as u64 * 100);
+            }
         }
         None
     }
@@ -147,9 +171,10 @@ static INT_PENDING: Mutex<RefCell<PendingEvents>> = Mutex::new(RefCell::new(Pend
     events_unrecorded_due_to_pending_saturation: 0,
 }));
 
+/// Data-ready ISR for the board INT pin (`board::INT_PIN_NAME` / `board::IntPin`).
 #[cfg(target_arch = "riscv32")]
 #[esp_hal::handler]
-fn gpio6_data_ready_handler() {
+fn int_data_ready_handler() {
     critical_section::with(|cs| {
         let mut input = INT_INPUT.borrow_ref_mut(cs);
         if let Some(input) = input.as_mut()
@@ -162,9 +187,9 @@ fn gpio6_data_ready_handler() {
 }
 
 #[cfg(target_arch = "riscv32")]
-pub(crate) fn arm(io_mux: IO_MUX<'static>, int_pin: GPIO6<'static>) {
+pub(crate) fn arm(io_mux: IO_MUX<'static>, int_pin: IntPin) {
     let mut io = Io::new(io_mux);
-    io.set_interrupt_handler(gpio6_data_ready_handler);
+    io.set_interrupt_handler(int_data_ready_handler);
     let mut input = Input::new(int_pin, InputConfig::default().with_pull(Pull::None));
     critical_section::with(|cs| {
         input.listen(Event::RisingEdge);
@@ -288,7 +313,10 @@ mod tests {
         assert_eq!(stats.interval_p50_us(), None);
         stats.consumed_batch(1, 10);
         stats.sample(10);
-        assert_eq!(AcquisitionStats::rate(1, stats.first_sample_us, stats.last_sample_us), None);
+        assert_eq!(
+            AcquisitionStats::rate(1, stats.first_sample_us, stats.last_sample_us),
+            None
+        );
         assert_eq!(stats.interval_count, 0);
         assert_eq!(stats.interval_p50_us(), None);
     }

@@ -7,54 +7,81 @@ use mpu6050_driver::{AccelRange, Dlpf, GyroRange, Identity};
 #[cfg(target_arch = "riscv32")]
 use mpu6050_driver::{Address, Mpu6050};
 
-pub(crate) const MPU_ADDR_AD0_LOW: u8 = 0x68;
-pub(crate) const MPU_ADDR_AD0_HIGH: u8 = 0x69;
+const MPU_ADDR_AD0_LOW: u8 = 0x68;
+const MPU_ADDR_AD0_HIGH: u8 = 0x69;
 
-pub(crate) const FIFO_ACCEL_GYRO_FRAME_BYTES: u16 = 12;
+const FIFO_ACCEL_GYRO_FRAME_BYTES: u16 = 12;
 pub(crate) const BLOCKED_IDLE_DELAY_MS: u32 = 100;
-pub(crate) const TARGET_DLPF: Dlpf = Dlpf::Cfg2;
+const TARGET_DLPF: Dlpf = Dlpf::Cfg2;
 // Exact value written to the MPU SMPLRT_DIV register.
-pub(crate) const TARGET_SMPLRT_DIV: u8 = 4;
+const TARGET_SMPLRT_DIV: u8 = 4;
 // Nominal rate derived from the configured registers:
 // 1_000 Hz / (1 + SMPLRT_DIV=4) = 200 Hz.
 // This does not verify the physical sensor cadence or host read rate.
-pub(crate) const EXPECTED_NOMINAL_SAMPLE_RATE_HZ: f32 = 200.0;
+const EXPECTED_NOMINAL_SAMPLE_RATE_HZ: f32 = 200.0;
 // Floating-point epsilon for the nominal-rate calculation, not a hardware tolerance.
-pub(crate) const NOMINAL_RATE_COMPARISON_EPSILON_HZ: f32 = 0.01;
+const NOMINAL_RATE_COMPARISON_EPSILON_HZ: f32 = 0.01;
 
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct StartupConditions {
-    pub(crate) diagnostics_complete: bool,
-    pub(crate) timing_confirmed: bool,
-    pub(crate) final_interrupts_zero: bool,
-    pub(crate) gpio_configured: bool,
-    pub(crate) stale_status_cleared: bool,
-    pub(crate) enable_success: bool,
-    pub(crate) exact_data_ready_readback: bool,
+    diagnostics_complete: bool,
+    timing_confirmed: bool,
+    final_interrupts_zero: bool,
+    gpio_configured: bool,
+    stale_status_cleared: bool,
+    enable_success: bool,
+    exact_data_ready_readback: bool,
 }
 
-pub(crate) trait DataReadyStartupDevice {
+/// Partial result of clear → enable → exact data-ready readback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DataReadyStartupResult {
+    stale_status_cleared: bool,
+    enable_success: bool,
+    exact_data_ready_readback: bool,
+}
+
+trait DataReadyStartupDevice {
     fn clear_int_status(&mut self) -> bool;
     fn enable_data_ready(&mut self) -> bool;
     fn only_data_ready_enabled(&mut self) -> Option<bool>;
 }
 
-pub(crate) fn configure_data_ready_startup(
+fn configure_data_ready_startup(
     device: &mut impl DataReadyStartupDevice,
-) -> StartupConditions {
+) -> DataReadyStartupResult {
     let stale_status_cleared = device.clear_int_status();
     let enable_success = stale_status_cleared && device.enable_data_ready();
     let exact_data_ready_readback =
         enable_success && device.only_data_ready_enabled().unwrap_or(false);
-    StartupConditions {
+    DataReadyStartupResult {
         stale_status_cleared,
         enable_success,
         exact_data_ready_readback,
-        ..Default::default()
     }
 }
 
+/// Clear stale INT status, enable data-ready, and confirm exact readback on the board MPU.
+#[cfg(target_arch = "riscv32")]
+pub(crate) fn configure_board_data_ready(mpu: &mut BoardMpu<'_>) -> DataReadyStartupResult {
+    configure_data_ready_startup(mpu)
+}
+
 impl StartupConditions {
+    pub(crate) const fn ready_for_gpio_arm(self) -> bool {
+        self.diagnostics_complete && self.timing_confirmed && self.final_interrupts_zero
+    }
+
+    pub(crate) fn mark_gpio_configured(&mut self) {
+        self.gpio_configured = true;
+    }
+
+    pub(crate) fn apply_data_ready(&mut self, result: DataReadyStartupResult) {
+        self.stale_status_cleared = result.stale_status_cleared;
+        self.enable_success = result.enable_success;
+        self.exact_data_ready_readback = result.exact_data_ready_readback;
+    }
+
     pub(crate) const fn allows_acquisition(self) -> bool {
         self.diagnostics_complete
             && self.timing_confirmed
@@ -163,7 +190,7 @@ impl VerificationEvidence {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ProbeResult {
+struct ProbeResult {
     address: u8,
     who_am_i: Option<u8>,
     identity: Option<Identity>,
@@ -182,14 +209,14 @@ struct RawAverage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct VerifiedSampleTiming {
+struct VerifiedSampleTiming {
     dlpf: Dlpf,
     divider: u8,
     rate_hz: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SampleTimingError {
+enum SampleTimingError {
     DlpfWrite,
     DlpfRead,
     DlpfMismatch,
@@ -226,7 +253,7 @@ impl SampleTimingError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct SampleTimingFailure {
+struct SampleTimingFailure {
     error: SampleTimingError,
     dlpf: Option<Dlpf>,
     divider: Option<u8>,
@@ -242,7 +269,7 @@ impl SampleTimingFailure {
     }
 }
 
-pub(crate) trait SampleTimingDevice {
+trait SampleTimingDevice {
     fn set_dlpf(&mut self, dlpf: Dlpf) -> bool;
     fn dlpf(&mut self) -> Option<Dlpf>;
     fn set_sample_rate_divider(&mut self, divider: u8) -> bool;
@@ -251,12 +278,12 @@ pub(crate) trait SampleTimingDevice {
 
 #[cfg(target_arch = "riscv32")]
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct AdvancedValidationResult {
-    pub(crate) interrupt_state_confirmed_zero: bool,
-    pub(crate) timing_registers_confirmed: bool,
+struct AdvancedValidationResult {
+    interrupt_state_confirmed_zero: bool,
+    timing_registers_confirmed: bool,
 }
 
-pub(crate) fn configure_sample_timing(
+fn configure_sample_timing(
     device: &mut impl SampleTimingDevice,
 ) -> Result<VerifiedSampleTiming, SampleTimingFailure> {
     if !device.set_dlpf(TARGET_DLPF) {
@@ -315,20 +342,17 @@ pub(crate) fn configure_sample_timing(
     })
 }
 
-pub(crate) fn stream_startup_allowed(
-    final_interrupts_zero: bool,
-    timing_registers_confirmed: bool,
-) -> bool {
+fn stream_startup_allowed(final_interrupts_zero: bool, timing_registers_confirmed: bool) -> bool {
     final_interrupts_zero && timing_registers_confirmed
 }
 
-pub(crate) fn calculated_rate_valid(rate_hz: Option<f32>) -> bool {
+fn calculated_rate_valid(rate_hz: Option<f32>) -> bool {
     rate_hz
         .map(|rate| rate.is_finite() && rate > 0.0)
         .unwrap_or(false)
 }
 
-pub(crate) fn calculated_rate_approx_target(rate_hz: Option<f32>) -> bool {
+fn calculated_rate_approx_target(rate_hz: Option<f32>) -> bool {
     calculated_rate_valid(rate_hz)
         && (rate_hz.unwrap_or_default() - EXPECTED_NOMINAL_SAMPLE_RATE_HZ).abs()
             <= NOMINAL_RATE_COMPARISON_EPSILON_HZ
@@ -375,7 +399,7 @@ impl fmt::Display for DlpfOpt {
     }
 }
 
-pub(crate) trait IdentityDescription {
+trait IdentityDescription {
     fn description(self) -> &'static str;
 }
 
@@ -472,7 +496,7 @@ impl SampleTimingDevice for BoardMpu<'_> {
 }
 
 #[cfg(target_arch = "riscv32")]
-pub(crate) fn run_advanced_validation(
+fn run_advanced_validation(
     mpu: &mut BoardMpu<'_>,
     delay: &Delay,
     address: u8,
@@ -778,7 +802,7 @@ fn validate_int_status(mpu: &mut BoardMpu<'_>, delay: &Delay, _address: u8) -> b
 }
 
 #[cfg(target_arch = "riscv32")]
-pub(crate) fn scan_candidates(i2c: I2c<'_, esp_hal::Blocking>) -> I2c<'_, esp_hal::Blocking> {
+fn scan_candidates(i2c: I2c<'_, esp_hal::Blocking>) -> I2c<'_, esp_hal::Blocking> {
     println!("I2C candidate scan: 0x68, 0x69");
     let mut mpu = Mpu6050::new(i2c, Address::Ad0Low);
     match mpu.who_am_i() {
@@ -801,7 +825,7 @@ pub(crate) fn scan_candidates(i2c: I2c<'_, esp_hal::Blocking>) -> I2c<'_, esp_ha
 }
 
 #[cfg(target_arch = "riscv32")]
-pub(crate) fn probe_imu_driver(mpu: &mut BoardMpu<'_>, address: u8) -> ProbeResult {
+fn probe_imu_driver(mpu: &mut BoardMpu<'_>, address: u8) -> ProbeResult {
     println!("Probing bus_address=0x{:02x}", address);
     let mut who_am_i = None;
     let mut identity = None;
@@ -845,7 +869,7 @@ pub(crate) fn probe_imu_driver(mpu: &mut BoardMpu<'_>, address: u8) -> ProbeResu
 }
 
 #[cfg(target_arch = "riscv32")]
-pub(crate) fn log_verification_summary(probe: ProbeResult) {
+fn log_verification_summary(probe: ProbeResult) {
     let identity = probe.identity;
     let evidence = VerificationEvidence {
         package_marking_matches: true,

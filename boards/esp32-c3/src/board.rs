@@ -28,17 +28,31 @@ pub const XCL_PIN_NAME: &str = "GPIO4";
 pub const AD0_PIN_NAME: &str = "GPIO5";
 pub const INT_PIN_NAME: &str = "GPIO6";
 
+/// Concrete HAL pin types for this board profile.
+///
+/// Pin identity lives only in this module so the rest of the firmware depends on
+/// the board map instead of hardcoding GPIO numbers.
+#[cfg(target_arch = "riscv32")]
+pub type SclPin = esp_hal::peripherals::GPIO0<'static>;
+#[cfg(target_arch = "riscv32")]
+pub type SdaPin = esp_hal::peripherals::GPIO1<'static>;
+#[cfg(target_arch = "riscv32")]
+pub type Ad0Pin = esp_hal::peripherals::GPIO5<'static>;
+/// MPU INT input pin (`INT_PIN_NAME`).
+#[cfg(target_arch = "riscv32")]
+pub type IntPin = esp_hal::peripherals::GPIO6<'static>;
+
 /// MPU wiring pins for this board profile.
 ///
 /// GPIO numbers are owned here so firmware uses the board map instead of
 /// hardcoding pin literals in `main`.
 #[cfg(target_arch = "riscv32")]
 pub struct MpuPins {
-    pub scl: esp_hal::peripherals::GPIO0<'static>,
-    pub sda: esp_hal::peripherals::GPIO1<'static>,
-    pub ad0: esp_hal::peripherals::GPIO5<'static>,
+    pub scl: SclPin,
+    pub sda: SdaPin,
+    pub ad0: Ad0Pin,
     /// MPU INT input (`INT_PIN_NAME`).
-    pub int: esp_hal::peripherals::GPIO6<'static>,
+    pub int: IntPin,
 }
 
 /// Take the MPU wiring pins defined by this board profile.

@@ -56,16 +56,10 @@ fn main() -> ! {
 
     let (mut mpu, mut conditions) = startup::initialize_sensor(i2c, &delay);
 
-    if conditions.diagnostics_complete
-        && conditions.timing_confirmed
-        && conditions.final_interrupts_zero
-    {
+    if conditions.ready_for_gpio_arm() {
         acquisition::arm(peripherals.IO_MUX, mpu_pins.int);
-        conditions.gpio_configured = true;
-        let interrupt_conditions = startup::configure_data_ready_startup(&mut mpu);
-        conditions.stale_status_cleared = interrupt_conditions.stale_status_cleared;
-        conditions.enable_success = interrupt_conditions.enable_success;
-        conditions.exact_data_ready_readback = interrupt_conditions.exact_data_ready_readback;
+        conditions.mark_gpio_configured();
+        conditions.apply_data_ready(startup::configure_board_data_ready(&mut mpu));
     }
     startup::log_data_ready_startup(&conditions);
 

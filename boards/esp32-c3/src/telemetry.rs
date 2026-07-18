@@ -1,5 +1,5 @@
 #[cfg(target_arch = "riscv32")]
-use crate::acquisition::{pending_snapshot, AcquisitionStats};
+use crate::acquisition::{AcquisitionStats, pending_snapshot};
 #[cfg(target_arch = "riscv32")]
 use crate::startup::BoardMpu;
 #[cfg(all(not(feature = "binary-frames"), target_arch = "riscv32"))]
@@ -27,8 +27,15 @@ pub(crate) fn maybe_log_raw_example(
         println!(
             "RAW consumed_events={} accel=({}, {}, {}) temp_raw={} gyro=({}, {}, {}) consumed_timestamp_us={} sample_timestamp_us={}",
             stats.consumed,
-            raw.accel[0], raw.accel[1], raw.accel[2], raw.temp, raw.gyro[0], raw.gyro[1],
-            raw.gyro[2], consumed_timestamp_us, sample_timestamp_us
+            raw.accel[0],
+            raw.accel[1],
+            raw.accel[2],
+            raw.temp,
+            raw.gyro[0],
+            raw.gyro[1],
+            raw.gyro[2],
+            consumed_timestamp_us,
+            sample_timestamp_us
         );
     }
 }
