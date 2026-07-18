@@ -27,3 +27,35 @@ pub const XDA_PIN_NAME: &str = "GPIO3";
 pub const XCL_PIN_NAME: &str = "GPIO4";
 pub const AD0_PIN_NAME: &str = "GPIO5";
 pub const INT_PIN_NAME: &str = "GPIO6";
+
+/// MPU wiring pins for this board profile.
+///
+/// GPIO numbers are owned here so firmware uses the board map instead of
+/// hardcoding pin literals in `main`.
+#[cfg(target_arch = "riscv32")]
+pub struct MpuPins {
+    pub scl: esp_hal::peripherals::GPIO0<'static>,
+    pub sda: esp_hal::peripherals::GPIO1<'static>,
+    pub ad0: esp_hal::peripherals::GPIO5<'static>,
+    /// MPU INT input (`INT_PIN_NAME`).
+    pub int: esp_hal::peripherals::GPIO6<'static>,
+}
+
+/// Take the MPU wiring pins defined by this board profile.
+///
+/// Pin identity (which HAL GPIO is SCL/SDA/AD0/INT) is defined only here.
+#[cfg(target_arch = "riscv32")]
+#[macro_export]
+macro_rules! take_mpu_pins {
+    ($peripherals:expr) => {
+        $crate::board::MpuPins {
+            scl: $peripherals.GPIO0,
+            sda: $peripherals.GPIO1,
+            ad0: $peripherals.GPIO5,
+            int: $peripherals.GPIO6,
+        }
+    };
+}
+
+#[cfg(target_arch = "riscv32")]
+pub use take_mpu_pins;

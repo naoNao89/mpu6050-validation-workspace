@@ -243,10 +243,11 @@ fn service_pending_batch<D: AcquisitionDevice>(
 use core::cell::RefCell;
 #[cfg(target_arch = "riscv32")]
 use critical_section::Mutex;
+/// Board INT pin input retained for the data-ready ISR (`board::INT_PIN_NAME`).
 #[cfg(target_arch = "riscv32")]
-static GPIO6_INPUT: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
+static INT_INPUT: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
 #[cfg(target_arch = "riscv32")]
-static GPIO6_PENDING: Mutex<RefCell<PendingEvents>> = Mutex::new(RefCell::new(PendingEvents {
+static INT_PENDING: Mutex<RefCell<PendingEvents>> = Mutex::new(RefCell::new(PendingEvents {
     pending: 0,
     max_pending: 0,
     total: 0,
@@ -255,14 +256,14 @@ static GPIO6_PENDING: Mutex<RefCell<PendingEvents>> = Mutex::new(RefCell::new(Pe
 
 #[cfg(target_arch = "riscv32")]
 #[esp_hal::handler]
-fn gpio6_data_ready_handler() {
+fn int_data_ready_handler() {
     critical_section::with(|cs| {
-        let mut input = GPIO6_INPUT.borrow_ref_mut(cs);
+        let mut input = INT_INPUT.borrow_ref_mut(cs);
         if let Some(input) = input.as_mut()
             && input.is_interrupt_set()
         {
             input.clear_interrupt();
-            GPIO6_PENDING.borrow_ref_mut(cs).signal();
+            INT_PENDING.borrow_ref_mut(cs).signal();
         }
     });
 }
@@ -612,7 +613,7 @@ impl IdentityDescription for Identity {
 #[cfg(target_arch = "riscv32")]
 #[main]
 fn main() -> ! {
-    let mut peripherals = esp_hal::init(esp_hal::Config::default());
+    let peripherals = esp_hal::init(esp_hal::Config::default());
     let delay = Delay::new();
 
     println!("MPU6050 ESP32-C3 esp-hal I2C bring-up started");
@@ -628,7 +629,10 @@ fn main() -> ! {
         AD0_PIN_NAME,
         INT_PIN_NAME
     );
-    println!("configured_nominal_sample_rate_hz=200.0 acquisition_mode=gpio6_data_ready_events");
+    println!(
+        "configured_nominal_sample_rate_hz=200.0 acquisition_mode=int_data_ready_events int_pin={}",
+        INT_PIN_NAME
+    );
     let reset_reason = esp_hal::system::reset_reason();
     // Reports whether this boot followed a watchdog-triggered reset.
     // This does not configure a watchdog or identify the running firmware image.
@@ -650,12 +654,13 @@ fn main() -> ! {
         reset_reason, watchdog_reset, watchdog_reset as u8
     );
 
+    let mut mpu_pins = board::take_mpu_pins!(peripherals);
     let scl_probe = Input::new(
-        peripherals.GPIO0.reborrow(),
+        mpu_pins.scl.reborrow(),
         InputConfig::default().with_pull(Pull::Up),
     );
     let sda_probe = Input::new(
-        peripherals.GPIO1.reborrow(),
+        mpu_pins.sda.reborrow(),
         InputConfig::default().with_pull(Pull::Up),
     );
     println!(
@@ -666,7 +671,7 @@ fn main() -> ! {
     drop(scl_probe);
     drop(sda_probe);
 
-    let _ad0 = Output::new(peripherals.GPIO5, Level::Low, OutputConfig::default());
+    let _ad0 = Output::new(mpu_pins.ad0, Level::Low, OutputConfig::default());
     println!(
         "AD0 driven LOW on {}; expected 7-bit address is 0x68",
         AD0_PIN_NAME
@@ -679,8 +684,8 @@ fn main() -> ! {
 
     let i2c = I2c::new(peripherals.I2C0, config)
         .expect("failed to initialize I2C0")
-        .with_scl(peripherals.GPIO0)
-        .with_sda(peripherals.GPIO1);
+        .with_scl(mpu_pins.scl)
+        .with_sda(mpu_pins.sda);
 
     println!(
         "{} initialized at {} kHz: SCL={} SDA={}",
@@ -718,14 +723,11 @@ fn main() -> ! {
         && conditions.final_interrupts_zero
     {
         let mut io = Io::new(peripherals.IO_MUX);
-        io.set_interrupt_handler(gpio6_data_ready_handler);
-        let mut input = Input::new(
-            peripherals.GPIO6,
-            InputConfig::default().with_pull(Pull::None),
-        );
+        io.set_interrupt_handler(int_data_ready_handler);
+        let mut input = Input::new(mpu_pins.int, InputConfig::default().with_pull(Pull::None));
         critical_section::with(|cs| {
             input.listen(Event::RisingEdge);
-            GPIO6_INPUT.borrow_ref_mut(cs).replace(input);
+            INT_INPUT.borrow_ref_mut(cs).replace(input);
         });
         conditions.gpio_configured = true;
         let interrupt_conditions = configure_data_ready_startup(&mut mpu);
@@ -750,7 +752,7 @@ fn main() -> ! {
         let mut last_summary_us = acquisition_start_us;
         loop {
             let batch_count =
-                critical_section::with(|cs| GPIO6_PENDING.borrow_ref_mut(cs).take_all());
+                critical_section::with(|cs| INT_PENDING.borrow_ref_mut(cs).take_all());
             if batch_count != 0 {
                 let consumed_timestamp_us =
                     Instant::now().duration_since_epoch().as_micros() as u64;
@@ -829,7 +831,7 @@ impl AcquisitionDevice for BoardMpu<'_> {
 
 #[cfg(target_arch = "riscv32")]
 fn log_acquisition_summary(stats: &AcquisitionStats, acquisition_start_us: u64, now_us: u64) {
-    let pending = critical_section::with(|cs| *GPIO6_PENDING.borrow_ref(cs));
+    let pending = critical_section::with(|cs| *INT_PENDING.borrow_ref(cs));
     println!(
         "acquisition_summary configured_nominal_rate_hz=200.0 measured_isr_event_rate_since_start_hz={:?} measured_consumed_event_rate_hz={:?} measured_sample_rate_hz={:?} isr_data_ready_total={} consumed_events={} missed_or_coalesced_events={} successful_samples={} current_pending={} max_pending={} events_unrecorded_due_to_pending_saturation={} motion_i2c_errors={} status_ack_i2c_errors={} total_i2c_errors={} first_consumed_us={:?} last_consumed_us={:?} first_sample_us={:?} last_sample_us={:?} successful_sample_read_completion_intervals={} successful_sample_interval_min_us={:?} successful_sample_interval_p50_us_approx_100us={:?} successful_sample_interval_max_us={:?}",
         if now_us > acquisition_start_us {
