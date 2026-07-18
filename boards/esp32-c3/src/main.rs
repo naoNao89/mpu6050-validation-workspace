@@ -99,7 +99,12 @@ struct PendingEvents {
     pending: u32,
     max_pending: u32,
     total: u64,
-    pending_counter_overflow: u64,
+    /// Number of data-ready ISR events that could not be added to the pending-event
+    /// count because that count was already saturated at `u32::MAX`.
+    ///
+    /// This is a software counter-saturation metric. It is not an MPU FIFO
+    /// overflow and does not directly count lost sensor samples.
+    events_unrecorded_due_to_pending_saturation: u64,
 }
 impl PendingEvents {
     fn signal(&mut self) {
@@ -108,7 +113,9 @@ impl PendingEvents {
             self.pending = next;
             self.max_pending = self.max_pending.max(next);
         } else {
-            self.pending_counter_overflow = self.pending_counter_overflow.saturating_add(1);
+            self.events_unrecorded_due_to_pending_saturation = self
+                .events_unrecorded_due_to_pending_saturation
+                .saturating_add(1);
         }
     }
     fn take_all(&mut self) -> u32 {
@@ -243,7 +250,7 @@ static GPIO6_PENDING: Mutex<RefCell<PendingEvents>> = Mutex::new(RefCell::new(Pe
     pending: 0,
     max_pending: 0,
     total: 0,
-    pending_counter_overflow: 0,
+    events_unrecorded_due_to_pending_saturation: 0,
 }));
 
 #[cfg(target_arch = "riscv32")]
@@ -822,7 +829,7 @@ impl AcquisitionDevice for BoardMpu<'_> {
 fn log_acquisition_summary(stats: &AcquisitionStats, acquisition_start_us: u64, now_us: u64) {
     let pending = critical_section::with(|cs| *GPIO6_PENDING.borrow_ref(cs));
     println!(
-        "acquisition_summary configured_nominal_rate_hz=200.0 measured_isr_event_rate_since_start_hz={:?} measured_consumed_event_rate_hz={:?} measured_sample_rate_hz={:?} isr_data_ready_total={} consumed_events={} missed_or_coalesced_events={} successful_samples={} current_pending={} max_pending={} pending_counter_overflow={} motion_i2c_errors={} status_ack_i2c_errors={} total_i2c_errors={} first_consumed_us={:?} last_consumed_us={:?} first_sample_us={:?} last_sample_us={:?} successful_sample_read_completion_intervals={} successful_sample_interval_min_us={:?} successful_sample_interval_p50_us_approx_100us={:?} successful_sample_interval_max_us={:?}",
+        "acquisition_summary configured_nominal_rate_hz=200.0 measured_isr_event_rate_since_start_hz={:?} measured_consumed_event_rate_hz={:?} measured_sample_rate_hz={:?} isr_data_ready_total={} consumed_events={} missed_or_coalesced_events={} successful_samples={} current_pending={} max_pending={} events_unrecorded_due_to_pending_saturation={} motion_i2c_errors={} status_ack_i2c_errors={} total_i2c_errors={} first_consumed_us={:?} last_consumed_us={:?} first_sample_us={:?} last_sample_us={:?} successful_sample_read_completion_intervals={} successful_sample_interval_min_us={:?} successful_sample_interval_p50_us_approx_100us={:?} successful_sample_interval_max_us={:?}",
         if now_us > acquisition_start_us {
             Some(pending.total as f32 * 1_000_000.0 / (now_us - acquisition_start_us) as f32)
         } else {
@@ -844,7 +851,7 @@ fn log_acquisition_summary(stats: &AcquisitionStats, acquisition_start_us: u64, 
         stats.successful_samples,
         pending.pending,
         pending.max_pending,
-        pending.pending_counter_overflow,
+        pending.events_unrecorded_due_to_pending_saturation,
         stats.motion_i2c_errors,
         stats.status_ack_i2c_errors,
         stats
@@ -1855,17 +1862,17 @@ mod tests {
     }
 
     #[test]
-    fn pending_events_saturate_and_record_overflow() {
+    fn pending_events_saturate_and_record_unrepresented_event() {
         let mut pending = PendingEvents {
             pending: u32::MAX,
             max_pending: u32::MAX,
             total: 9,
-            pending_counter_overflow: 0,
+            events_unrecorded_due_to_pending_saturation: 0,
         };
         pending.signal();
         assert_eq!(pending.pending, u32::MAX);
         assert_eq!(pending.total, 10);
-        assert_eq!(pending.pending_counter_overflow, 1);
+        assert_eq!(pending.events_unrecorded_due_to_pending_saturation, 1);
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
