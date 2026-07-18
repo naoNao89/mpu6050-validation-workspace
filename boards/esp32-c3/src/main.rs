@@ -630,6 +630,8 @@ fn main() -> ! {
     );
     println!("configured_nominal_sample_rate_hz=200.0 acquisition_mode=gpio6_data_ready_events");
     let reset_reason = esp_hal::system::reset_reason();
+    // Reports whether this boot followed a watchdog-triggered reset.
+    // This does not configure a watchdog or identify the running firmware image.
     let watchdog_reset = matches!(
         reset_reason,
         Some(
