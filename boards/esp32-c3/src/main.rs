@@ -99,7 +99,7 @@ struct PendingEvents {
     pending: u32,
     max_pending: u32,
     total: u64,
-    dropped: u64,
+    pending_counter_overflow: u64,
 }
 impl PendingEvents {
     fn signal(&mut self) {
@@ -108,26 +108,25 @@ impl PendingEvents {
             self.pending = next;
             self.max_pending = self.max_pending.max(next);
         } else {
-            self.dropped = self.dropped.saturating_add(1);
+            self.pending_counter_overflow = self.pending_counter_overflow.saturating_add(1);
         }
     }
-    fn consume(&mut self) -> bool {
-        if self.pending == 0 {
-            return false;
-        }
-        self.pending -= 1;
-        true
+    fn take_all(&mut self) -> u32 {
+        let pending = self.pending;
+        self.pending = 0;
+        pending
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 struct AcquisitionStats {
     consumed: u64,
+    missed_or_coalesced_events: u64,
     successful_samples: u64,
     motion_i2c_errors: u64,
     status_ack_i2c_errors: u64,
-    first_event_us: Option<u64>,
-    last_event_us: Option<u64>,
+    first_consumed_us: Option<u64>,
+    last_consumed_us: Option<u64>,
     first_sample_us: Option<u64>,
     last_sample_us: Option<u64>,
     interval_count: u64,
@@ -139,11 +138,12 @@ impl Default for AcquisitionStats {
     fn default() -> Self {
         Self {
             consumed: 0,
+            missed_or_coalesced_events: 0,
             successful_samples: 0,
             motion_i2c_errors: 0,
             status_ack_i2c_errors: 0,
-            first_event_us: None,
-            last_event_us: None,
+            first_consumed_us: None,
+            last_consumed_us: None,
             first_sample_us: None,
             last_sample_us: None,
             interval_count: 0,
@@ -154,9 +154,13 @@ impl Default for AcquisitionStats {
     }
 }
 impl AcquisitionStats {
-    fn event(&mut self, now: u64) {
-        self.first_event_us.get_or_insert(now);
-        self.last_event_us = Some(now);
+    fn consumed_batch(&mut self, count: u32, now: u64) {
+        self.consumed = self.consumed.saturating_add(count as u64);
+        self.missed_or_coalesced_events = self
+            .missed_or_coalesced_events
+            .saturating_add(count.saturating_sub(1) as u64);
+        self.first_consumed_us.get_or_insert(now);
+        self.last_consumed_us = Some(now);
     }
     fn sample(&mut self, now: u64) {
         if let Some(previous) = self.last_sample_us {
@@ -200,6 +204,34 @@ impl AcquisitionStats {
     }
 }
 
+trait AcquisitionDevice {
+    type Sample;
+
+    fn read_motion(&mut self) -> Option<Self::Sample>;
+    fn acknowledge_status(&mut self) -> bool;
+}
+
+fn service_pending_batch<D: AcquisitionDevice>(
+    device: &mut D,
+    stats: &mut AcquisitionStats,
+    batch_count: u32,
+    consumed_timestamp_us: u64,
+    successful_sample_timestamp_us: impl FnOnce() -> u64,
+) -> Option<D::Sample> {
+    debug_assert!(batch_count > 0);
+    stats.consumed_batch(batch_count, consumed_timestamp_us);
+    let sample = device.read_motion();
+    if sample.is_some() {
+        stats.sample(successful_sample_timestamp_us());
+    } else {
+        stats.motion_i2c_errors = stats.motion_i2c_errors.saturating_add(1);
+    }
+    if !device.acknowledge_status() {
+        stats.status_ack_i2c_errors = stats.status_ack_i2c_errors.saturating_add(1);
+    }
+    sample
+}
+
 #[cfg(target_arch = "riscv32")]
 use core::cell::RefCell;
 #[cfg(target_arch = "riscv32")]
@@ -211,7 +243,7 @@ static GPIO6_PENDING: Mutex<RefCell<PendingEvents>> = Mutex::new(RefCell::new(Pe
     pending: 0,
     max_pending: 0,
     total: 0,
-    dropped: 0,
+    pending_counter_overflow: 0,
 }));
 
 #[cfg(target_arch = "riscv32")]
@@ -708,30 +740,24 @@ fn main() -> ! {
         let acquisition_start_us = Instant::now().duration_since_epoch().as_micros() as u64;
         let mut last_summary_us = acquisition_start_us;
         loop {
-            let consumed = critical_section::with(|cs| GPIO6_PENDING.borrow_ref_mut(cs).consume());
-            if consumed {
-                let now = Instant::now().duration_since_epoch().as_micros() as u64;
-                stats.consumed += 1;
-                stats.event(now);
-                let sample_for_output = match mpu.read_raw_accel_gyro_temp() {
-                    Ok(raw) => {
-                        let sample_now = Instant::now().duration_since_epoch().as_micros() as u64;
-                        stats.sample(sample_now);
-                        Some((raw, sample_now))
-                    }
-                    Err(_) => {
-                        stats.motion_i2c_errors += 1;
-                        None
-                    }
-                };
-                if mpu.int_status().is_err() {
-                    stats.status_ack_i2c_errors += 1;
-                }
-                if let Some((raw, sample_now)) = sample_for_output
+            let batch_count =
+                critical_section::with(|cs| GPIO6_PENDING.borrow_ref_mut(cs).take_all());
+            if batch_count != 0 {
+                let consumed_timestamp_us =
+                    Instant::now().duration_since_epoch().as_micros() as u64;
+                let sample_for_output = service_pending_batch(
+                    &mut mpu,
+                    &mut stats,
+                    batch_count,
+                    consumed_timestamp_us,
+                    || Instant::now().duration_since_epoch().as_micros() as u64,
+                );
+                if let Some(raw) = sample_for_output
                     && stats.successful_samples <= RAW_EXAMPLE_LIMIT
                 {
+                    let sample_timestamp_us = stats.last_sample_us.unwrap_or_default();
                     println!(
-                        "RAW event={} accel=({}, {}, {}) temp_raw={} gyro=({}, {}, {}) event_timestamp_us={} sample_timestamp_us={}",
+                        "RAW consumed_events={} accel=({}, {}, {}) temp_raw={} gyro=({}, {}, {}) consumed_timestamp_us={} sample_timestamp_us={}",
                         stats.consumed,
                         raw.accel[0],
                         raw.accel[1],
@@ -740,8 +766,8 @@ fn main() -> ! {
                         raw.gyro[0],
                         raw.gyro[1],
                         raw.gyro[2],
-                        now,
-                        sample_now
+                        consumed_timestamp_us,
+                        sample_timestamp_us
                     );
                 }
             }
@@ -780,16 +806,33 @@ impl DataReadyStartupDevice for BoardMpu<'_> {
 }
 
 #[cfg(target_arch = "riscv32")]
+impl AcquisitionDevice for BoardMpu<'_> {
+    type Sample = RawAccelGyroTemp;
+
+    fn read_motion(&mut self) -> Option<Self::Sample> {
+        self.read_raw_accel_gyro_temp().ok()
+    }
+
+    fn acknowledge_status(&mut self) -> bool {
+        self.int_status().is_ok()
+    }
+}
+
+#[cfg(target_arch = "riscv32")]
 fn log_acquisition_summary(stats: &AcquisitionStats, acquisition_start_us: u64, now_us: u64) {
     let pending = critical_section::with(|cs| *GPIO6_PENDING.borrow_ref(cs));
     println!(
-        "acquisition_summary configured_nominal_rate_hz=200.0 measured_isr_event_rate_since_start_hz={:?} measured_consumed_event_rate_hz={:?} measured_sample_rate_hz={:?} isr_data_ready_total={} consumed_events={} successful_samples={} current_pending={} max_pending={} dropped_overflow={} motion_i2c_errors={} status_ack_i2c_errors={} total_i2c_errors={} first_event_us={:?} last_event_us={:?} first_sample_us={:?} last_sample_us={:?} sample_intervals={} interval_min_us={:?} interval_p50_us_approx_100us={:?} interval_max_us={:?}",
+        "acquisition_summary configured_nominal_rate_hz=200.0 measured_isr_event_rate_since_start_hz={:?} measured_consumed_event_rate_hz={:?} measured_sample_rate_hz={:?} isr_data_ready_total={} consumed_events={} missed_or_coalesced_events={} successful_samples={} current_pending={} max_pending={} pending_counter_overflow={} motion_i2c_errors={} status_ack_i2c_errors={} total_i2c_errors={} first_consumed_us={:?} last_consumed_us={:?} first_sample_us={:?} last_sample_us={:?} successful_sample_read_completion_intervals={} successful_sample_interval_min_us={:?} successful_sample_interval_p50_us_approx_100us={:?} successful_sample_interval_max_us={:?}",
         if now_us > acquisition_start_us {
             Some(pending.total as f32 * 1_000_000.0 / (now_us - acquisition_start_us) as f32)
         } else {
             None
         },
-        AcquisitionStats::rate(stats.consumed, stats.first_event_us, stats.last_event_us),
+        AcquisitionStats::rate(
+            stats.consumed,
+            stats.first_consumed_us,
+            stats.last_consumed_us
+        ),
         AcquisitionStats::rate(
             stats.successful_samples,
             stats.first_sample_us,
@@ -797,17 +840,18 @@ fn log_acquisition_summary(stats: &AcquisitionStats, acquisition_start_us: u64, 
         ),
         pending.total,
         stats.consumed,
+        stats.missed_or_coalesced_events,
         stats.successful_samples,
         pending.pending,
         pending.max_pending,
-        pending.dropped,
+        pending.pending_counter_overflow,
         stats.motion_i2c_errors,
         stats.status_ack_i2c_errors,
         stats
             .motion_i2c_errors
             .saturating_add(stats.status_ack_i2c_errors),
-        stats.first_event_us,
-        stats.last_event_us,
+        stats.first_consumed_us,
+        stats.last_consumed_us,
         stats.first_sample_us,
         stats.last_sample_us,
         stats.interval_count,
@@ -1805,10 +1849,9 @@ mod tests {
             (pending.total, pending.pending, pending.max_pending),
             (3, 3, 3)
         );
-        assert!(pending.consume());
-        assert!(pending.consume());
-        assert!(pending.consume());
-        assert!(!pending.consume());
+        assert_eq!(pending.take_all(), 3);
+        assert_eq!(pending.pending, 0);
+        assert_eq!(pending.take_all(), 0);
     }
 
     #[test]
@@ -1817,12 +1860,12 @@ mod tests {
             pending: u32::MAX,
             max_pending: u32::MAX,
             total: 9,
-            dropped: 0,
+            pending_counter_overflow: 0,
         };
         pending.signal();
         assert_eq!(pending.pending, u32::MAX);
         assert_eq!(pending.total, 10);
-        assert_eq!(pending.dropped, 1);
+        assert_eq!(pending.pending_counter_overflow, 1);
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1926,12 +1969,49 @@ mod tests {
         );
     }
 
+    struct FakeAcquisitionDevice {
+        motion_reads: u32,
+        status_acknowledgments: u32,
+    }
+
+    impl AcquisitionDevice for FakeAcquisitionDevice {
+        type Sample = u8;
+
+        fn read_motion(&mut self) -> Option<Self::Sample> {
+            self.motion_reads += 1;
+            Some(42)
+        }
+
+        fn acknowledge_status(&mut self) -> bool {
+            self.status_acknowledgments += 1;
+            true
+        }
+    }
+
+    #[test]
+    fn backlog_batch_reads_one_frame_and_counts_coalesced_events() {
+        let mut device = FakeAcquisitionDevice {
+            motion_reads: 0,
+            status_acknowledgments: 0,
+        };
+        let mut stats = AcquisitionStats::default();
+
+        let sample = service_pending_batch(&mut device, &mut stats, 3, 100, || 110);
+
+        assert_eq!(sample, Some(42));
+        assert_eq!(device.motion_reads, 1);
+        assert_eq!(device.status_acknowledgments, 1);
+        assert_eq!(stats.consumed, 3);
+        assert_eq!(stats.successful_samples, 1);
+        assert_eq!(stats.missed_or_coalesced_events, 2);
+    }
+
     #[test]
     fn zero_and_one_sample_statistics_are_safe() {
         let mut stats = AcquisitionStats::default();
         assert_eq!(AcquisitionStats::rate(0, None, None), None);
         assert_eq!(stats.interval_p50_us(), None);
-        stats.event(10);
+        stats.consumed_batch(1, 10);
         stats.sample(10);
         assert_eq!(
             AcquisitionStats::rate(1, stats.first_sample_us, stats.last_sample_us),
