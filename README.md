@@ -53,6 +53,12 @@ Flash and monitor:
 ./run.sh
 ```
 
+Binary sample stream (data-ready → v1 frames, host `imu-tool --mode binary`):
+
+```bash
+MODE=binary DURATION=30 LOG_FILE=logs/motion-binary.log ./run.sh
+```
+
 Override serial port:
 
 ```bash

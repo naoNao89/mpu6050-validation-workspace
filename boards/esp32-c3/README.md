@@ -30,6 +30,14 @@ make build
 ./run.sh
 ```
 
+Continuous binary motion stream (v1 frames for `imu-tool --mode binary`):
+
+```sh
+MODE=binary DURATION=30 LOG_FILE=logs/motion-binary.log ./run.sh
+```
+
+`MODE=binary` builds with `--features binary-frames`. Default text mode is unchanged.
+
 Check the firmware without building host-only workspace members for the embedded
 target:
 

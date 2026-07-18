@@ -135,25 +135,38 @@ pub(crate) trait AcquisitionDevice {
     fn acknowledge_status(&mut self) -> bool;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ServiceBatchResult<S> {
+    pub(crate) sample: Option<S>,
+    /// Present only when `sample` is `Some`; device-side successful-sample time.
+    pub(crate) successful_sample_timestamp_us: Option<u64>,
+}
+
 pub(crate) fn service_pending_batch<D: AcquisitionDevice>(
     device: &mut D,
     stats: &mut AcquisitionStats,
     batch_count: u32,
     consumed_timestamp_us: u64,
     successful_sample_timestamp_us: impl FnOnce() -> u64,
-) -> Option<D::Sample> {
+) -> ServiceBatchResult<D::Sample> {
     debug_assert!(batch_count > 0);
     stats.consumed_batch(batch_count, consumed_timestamp_us);
     let sample = device.read_motion();
-    if sample.is_some() {
-        stats.sample(successful_sample_timestamp_us());
+    let successful_sample_timestamp_us = if sample.is_some() {
+        let timestamp_us = successful_sample_timestamp_us();
+        stats.sample(timestamp_us);
+        Some(timestamp_us)
     } else {
         stats.motion_i2c_errors = stats.motion_i2c_errors.saturating_add(1);
-    }
+        None
+    };
     if !device.acknowledge_status() {
         stats.status_ack_i2c_errors = stats.status_ack_i2c_errors.saturating_add(1);
     }
-    sample
+    ServiceBatchResult {
+        sample,
+        successful_sample_timestamp_us,
+    }
 }
 
 #[cfg(target_arch = "riscv32")]
@@ -206,6 +219,8 @@ pub(crate) fn pending_snapshot() -> PendingEvents {
 pub(crate) struct DrainOutcome<S> {
     pub(crate) sample: Option<S>,
     pub(crate) consumed_timestamp_us: u64,
+    /// Paired with `sample`: set only for a successful motion read.
+    pub(crate) successful_sample_timestamp_us: Option<u64>,
 }
 
 #[cfg(target_arch = "riscv32")]
@@ -218,12 +233,13 @@ pub(crate) fn drain_pending<D: AcquisitionDevice>(
         return None;
     }
     let consumed_timestamp_us = Instant::now().duration_since_epoch().as_micros() as u64;
-    let sample = service_pending_batch(device, stats, batch_count, consumed_timestamp_us, || {
+    let result = service_pending_batch(device, stats, batch_count, consumed_timestamp_us, || {
         Instant::now().duration_since_epoch().as_micros() as u64
     });
     Some(DrainOutcome {
-        sample,
+        sample: result.sample,
         consumed_timestamp_us,
+        successful_sample_timestamp_us: result.successful_sample_timestamp_us,
     })
 }
 #[cfg(target_arch = "riscv32")]
@@ -272,6 +288,7 @@ mod tests {
     struct FakeAcquisitionDevice {
         motion_reads: u32,
         status_acknowledgments: u32,
+        motion: Option<u8>,
     }
 
     impl AcquisitionDevice for FakeAcquisitionDevice {
@@ -279,7 +296,7 @@ mod tests {
 
         fn read_motion(&mut self) -> Option<Self::Sample> {
             self.motion_reads += 1;
-            Some(42)
+            self.motion
         }
 
         fn acknowledge_status(&mut self) -> bool {
@@ -293,17 +310,56 @@ mod tests {
         let mut device = FakeAcquisitionDevice {
             motion_reads: 0,
             status_acknowledgments: 0,
+            motion: Some(42),
         };
         let mut stats = AcquisitionStats::default();
 
-        let sample = service_pending_batch(&mut device, &mut stats, 3, 100, || 110);
+        let result = service_pending_batch(&mut device, &mut stats, 3, 100, || 110);
 
-        assert_eq!(sample, Some(42));
+        assert_eq!(result.sample, Some(42));
+        assert_eq!(result.successful_sample_timestamp_us, Some(110));
         assert_eq!(device.motion_reads, 1);
         assert_eq!(device.status_acknowledgments, 1);
         assert_eq!(stats.consumed, 3);
         assert_eq!(stats.successful_samples, 1);
         assert_eq!(stats.missed_or_coalesced_events, 2);
+    }
+
+    #[test]
+    fn sample_and_successful_sample_timestamp_remain_paired() {
+        let mut device = FakeAcquisitionDevice {
+            motion_reads: 0,
+            status_acknowledgments: 0,
+            motion: Some(7),
+        };
+        let mut stats = AcquisitionStats::default();
+        let result = service_pending_batch(&mut device, &mut stats, 1, 50, || 99);
+        assert_eq!(
+            (result.sample, result.successful_sample_timestamp_us),
+            (Some(7), Some(99))
+        );
+        assert_eq!(stats.last_sample_us, Some(99));
+    }
+
+    #[test]
+    fn failed_motion_read_has_no_successful_sample_timestamp() {
+        let mut device = FakeAcquisitionDevice {
+            motion_reads: 0,
+            status_acknowledgments: 0,
+            motion: None,
+        };
+        let mut stats = AcquisitionStats::default();
+        let result = service_pending_batch(&mut device, &mut stats, 2, 50, || {
+            panic!("timestamp must not be taken on failed motion read")
+        });
+        assert_eq!(result.sample, None);
+        assert_eq!(result.successful_sample_timestamp_us, None);
+        assert_eq!(stats.successful_samples, 0);
+        assert_eq!(stats.motion_i2c_errors, 1);
+        assert_eq!(stats.consumed, 2);
+        assert_eq!(stats.missed_or_coalesced_events, 1);
+        assert_eq!(device.motion_reads, 1);
+        assert_eq!(device.status_acknowledgments, 1);
     }
 
     #[test]

@@ -10,6 +10,11 @@ use mpu6050_driver::{Address, Mpu6050};
 const MPU_ADDR_AD0_LOW: u8 = 0x68;
 const MPU_ADDR_AD0_HIGH: u8 = 0x69;
 
+/// Bus address selected for the live acquisition MPU instance.
+pub(crate) const fn selected_bus_address() -> u8 {
+    MPU_ADDR_AD0_LOW
+}
+
 const FIFO_ACCEL_GYRO_FRAME_BYTES: u16 = 12;
 pub(crate) const BLOCKED_IDLE_DELAY_MS: u32 = 100;
 const TARGET_DLPF: Dlpf = Dlpf::Cfg2;
