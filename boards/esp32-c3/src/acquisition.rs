@@ -1,6 +1,10 @@
 use crate::telemetry::AcquisitionStats;
 #[cfg(target_arch = "riscv32")]
-use esp_hal::gpio::Input;
+use esp_hal::{
+    gpio::{Event, Input, InputConfig, Io, Pull},
+    peripherals::{GPIO6, IO_MUX},
+    time::Instant,
+};
 #[cfg(target_arch = "riscv32")]
 use mpu6050_driver::RawAccelGyroTemp;
 
@@ -69,9 +73,9 @@ use core::cell::RefCell;
 use critical_section::Mutex;
 /// Board INT pin input retained for the data-ready ISR (`board::INT_PIN_NAME`).
 #[cfg(target_arch = "riscv32")]
-pub(crate) static INT_INPUT: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
+static INT_INPUT: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
 #[cfg(target_arch = "riscv32")]
-pub(crate) static INT_PENDING: Mutex<RefCell<PendingEvents>> = Mutex::new(RefCell::new(PendingEvents {
+static INT_PENDING: Mutex<RefCell<PendingEvents>> = Mutex::new(RefCell::new(PendingEvents {
     pending: 0,
     max_pending: 0,
     total: 0,
@@ -80,7 +84,7 @@ pub(crate) static INT_PENDING: Mutex<RefCell<PendingEvents>> = Mutex::new(RefCel
 
 #[cfg(target_arch = "riscv32")]
 #[esp_hal::handler]
-pub(crate) fn int_data_ready_handler() {
+fn int_data_ready_handler() {
     critical_section::with(|cs| {
         let mut input = INT_INPUT.borrow_ref_mut(cs);
         if let Some(input) = input.as_mut()
@@ -90,6 +94,47 @@ pub(crate) fn int_data_ready_handler() {
             INT_PENDING.borrow_ref_mut(cs).signal();
         }
     });
+}
+
+#[cfg(target_arch = "riscv32")]
+pub(crate) fn arm(io_mux: IO_MUX<'static>, int_pin: GPIO6<'static>) {
+    let mut io = Io::new(io_mux);
+    io.set_interrupt_handler(int_data_ready_handler);
+    let mut input = Input::new(int_pin, InputConfig::default().with_pull(Pull::None));
+    critical_section::with(|cs| {
+        input.listen(Event::RisingEdge);
+        INT_INPUT.borrow_ref_mut(cs).replace(input);
+    });
+}
+
+#[cfg(target_arch = "riscv32")]
+pub(crate) fn pending_snapshot() -> PendingEvents {
+    critical_section::with(|cs| *INT_PENDING.borrow_ref(cs))
+}
+
+#[cfg(target_arch = "riscv32")]
+pub(crate) struct DrainOutcome<S> {
+    pub(crate) sample: Option<S>,
+    pub(crate) consumed_timestamp_us: u64,
+}
+
+#[cfg(target_arch = "riscv32")]
+pub(crate) fn drain_pending<D: AcquisitionDevice>(
+    device: &mut D,
+    stats: &mut AcquisitionStats,
+) -> Option<DrainOutcome<D::Sample>> {
+    let batch_count = critical_section::with(|cs| INT_PENDING.borrow_ref_mut(cs).take_all());
+    if batch_count == 0 {
+        return None;
+    }
+    let consumed_timestamp_us = Instant::now().duration_since_epoch().as_micros() as u64;
+    let sample = service_pending_batch(device, stats, batch_count, consumed_timestamp_us, || {
+        Instant::now().duration_since_epoch().as_micros() as u64
+    });
+    Some(DrainOutcome {
+        sample,
+        consumed_timestamp_us,
+    })
 }
 #[cfg(target_arch = "riscv32")]
 impl AcquisitionDevice for crate::startup::BoardMpu<'_> {

@@ -1,9 +1,9 @@
 use core::fmt;
-use mpu6050_driver::{AccelRange, Dlpf, GyroRange, Identity};
 #[cfg(target_arch = "riscv32")]
 use esp_hal::{delay::Delay, i2c::master::I2c};
 #[cfg(target_arch = "riscv32")]
 use esp_println::println;
+use mpu6050_driver::{AccelRange, Dlpf, GyroRange, Identity};
 #[cfg(target_arch = "riscv32")]
 use mpu6050_driver::{Address, Mpu6050};
 
@@ -39,7 +39,9 @@ pub(crate) trait DataReadyStartupDevice {
     fn only_data_ready_enabled(&mut self) -> Option<bool>;
 }
 
-pub(crate) fn configure_data_ready_startup(device: &mut impl DataReadyStartupDevice) -> StartupConditions {
+pub(crate) fn configure_data_ready_startup(
+    device: &mut impl DataReadyStartupDevice,
+) -> StartupConditions {
     let stale_status_cleared = device.clear_int_status();
     let enable_success = stale_status_cleared && device.enable_data_ready();
     let exact_data_ready_readback =
@@ -131,21 +133,33 @@ struct VerificationEvidence {
 impl VerificationEvidence {
     fn score(self) -> u8 {
         let mut score = 0;
-        if self.package_marking_matches { score += 1; }
-        if self.i2c_ack { score += 2; }
+        if self.package_marking_matches {
+            score += 1;
+        }
+        if self.i2c_ack {
+            score += 2;
+        }
         match self.identity {
             Some(Identity::Mpu6050) => score += 4,
             Some(Identity::Mpu6500Compatible) => score += 2,
             Some(Identity::Unknown(_)) | None => {}
         }
-        if self.pwr_mgmt_1_readable { score += 3; }
-        if self.raw_block_readable { score += 3; }
+        if self.pwr_mgmt_1_readable {
+            score += 3;
+        }
+        if self.raw_block_readable {
+            score += 3;
+        }
         score
     }
     fn identity_verdict(self) -> IdentityVerdict {
-        self.identity.map(IdentityVerdict::from_identity).unwrap_or(IdentityVerdict::Unknown)
+        self.identity
+            .map(IdentityVerdict::from_identity)
+            .unwrap_or(IdentityVerdict::Unknown)
     }
-    fn level(self) -> VerificationLevel { VerificationLevel::from_score(self.score()) }
+    fn level(self) -> VerificationLevel {
+        VerificationLevel::from_score(self.score())
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -301,7 +315,10 @@ pub(crate) fn configure_sample_timing(
     })
 }
 
-pub(crate) fn stream_startup_allowed(final_interrupts_zero: bool, timing_registers_confirmed: bool) -> bool {
+pub(crate) fn stream_startup_allowed(
+    final_interrupts_zero: bool,
+    timing_registers_confirmed: bool,
+) -> bool {
     final_interrupts_zero && timing_registers_confirmed
 }
 
@@ -373,6 +390,54 @@ impl IdentityDescription for Identity {
 }
 #[cfg(target_arch = "riscv32")]
 pub(crate) type BoardMpu<'a> = Mpu6050<I2c<'a, esp_hal::Blocking>>;
+
+#[cfg(target_arch = "riscv32")]
+pub(crate) fn initialize_sensor<'a>(
+    i2c: I2c<'a, esp_hal::Blocking>,
+    delay: &Delay,
+) -> (BoardMpu<'a>, StartupConditions) {
+    let i2c = scan_candidates(i2c);
+    let mut mpu = Mpu6050::new(i2c, Address::Ad0Low);
+    let wake_ok = mpu.wake().is_ok();
+    println!(
+        "driver wake bus_address=0x{:02x} ok={}",
+        MPU_ADDR_AD0_LOW, wake_ok
+    );
+    let primary_probe = probe_imu_driver(&mut mpu, MPU_ADDR_AD0_LOW);
+    let i2c = mpu.release();
+    let mut high_mpu = Mpu6050::new(i2c, Address::Ad0High);
+    let _ = probe_imu_driver(&mut high_mpu, MPU_ADDR_AD0_HIGH);
+    let i2c = high_mpu.release();
+    let mut mpu = Mpu6050::new(i2c, Address::Ad0Low);
+    log_verification_summary(primary_probe);
+    let validation = run_advanced_validation(&mut mpu, delay, MPU_ADDR_AD0_LOW);
+    let conditions = StartupConditions {
+        diagnostics_complete: true,
+        timing_confirmed: validation.timing_registers_confirmed,
+        final_interrupts_zero: validation.interrupt_state_confirmed_zero,
+        ..Default::default()
+    };
+    println!(
+        "imu_interrupt_policy=explicit_opt_in sources_disabled={} timing_registers_confirmed={} status_polling=off",
+        validation.interrupt_state_confirmed_zero, validation.timing_registers_confirmed
+    );
+    (mpu, conditions)
+}
+
+#[cfg(target_arch = "riscv32")]
+pub(crate) fn log_data_ready_startup(conditions: &StartupConditions) {
+    println!(
+        "data_ready_startup diagnostics_complete={} timing_confirmed={} final_interrupts_zero={} gpio_configured={} stale_status_cleared={} enable_success={} exact_data_ready_readback={} acquisition_started={}",
+        conditions.diagnostics_complete,
+        conditions.timing_confirmed,
+        conditions.final_interrupts_zero,
+        conditions.gpio_configured,
+        conditions.stale_status_cleared,
+        conditions.enable_success,
+        conditions.exact_data_ready_readback,
+        conditions.allows_acquisition()
+    );
+}
 
 #[cfg(target_arch = "riscv32")]
 impl DataReadyStartupDevice for BoardMpu<'_> {

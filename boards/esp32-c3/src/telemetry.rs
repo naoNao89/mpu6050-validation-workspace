@@ -1,17 +1,17 @@
 #[cfg(target_arch = "riscv32")]
-use esp_hal::time::Instant;
+use crate::acquisition::pending_snapshot;
 #[cfg(target_arch = "riscv32")]
-use esp_println::println;
+use crate::startup::BoardMpu;
+#[cfg(all(not(feature = "binary-frames"), target_arch = "riscv32"))]
+use core::fmt;
+#[cfg(target_arch = "riscv32")]
+use esp_hal::time::Instant;
 #[cfg(all(feature = "binary-frames", target_arch = "riscv32"))]
 use esp_println::Printer;
 #[cfg(target_arch = "riscv32")]
+use esp_println::println;
+#[cfg(target_arch = "riscv32")]
 use mpu6050_driver::{RawAccelGyroTemp, RawReadOutcome, RawRetryPolicy};
-#[cfg(target_arch = "riscv32")]
-use crate::startup::BoardMpu;
-#[cfg(target_arch = "riscv32")]
-use crate::acquisition::INT_PENDING;
-#[cfg(all(not(feature = "binary-frames"), target_arch = "riscv32"))]
-use core::fmt;
 
 pub(crate) const RAW_EXAMPLE_LIMIT: u64 = 8;
 pub(crate) const SUMMARY_PERIOD_US: u64 = 1_000_000;
@@ -30,6 +30,51 @@ pub(crate) struct AcquisitionStats {
     pub(crate) interval_min_us: Option<u64>,
     pub(crate) interval_max_us: Option<u64>,
     interval_histogram: [u32; 128],
+}
+#[cfg(target_arch = "riscv32")]
+pub(crate) struct Telemetry {
+    pub(crate) stats: AcquisitionStats,
+    acquisition_start_us: u64,
+    last_summary_us: u64,
+}
+
+#[cfg(target_arch = "riscv32")]
+impl Telemetry {
+    pub(crate) fn start() -> Self {
+        let now = Instant::now().duration_since_epoch().as_micros() as u64;
+        Self {
+            stats: AcquisitionStats::default(),
+            acquisition_start_us: now,
+            last_summary_us: now,
+        }
+    }
+
+    pub(crate) fn maybe_log_raw_example(&self, raw: &RawAccelGyroTemp, consumed_timestamp_us: u64) {
+        if self.stats.successful_samples <= RAW_EXAMPLE_LIMIT {
+            let sample_timestamp_us = self.stats.last_sample_us.unwrap_or_default();
+            println!(
+                "RAW consumed_events={} accel=({}, {}, {}) temp_raw={} gyro=({}, {}, {}) consumed_timestamp_us={} sample_timestamp_us={}",
+                self.stats.consumed,
+                raw.accel[0],
+                raw.accel[1],
+                raw.accel[2],
+                raw.temp,
+                raw.gyro[0],
+                raw.gyro[1],
+                raw.gyro[2],
+                consumed_timestamp_us,
+                sample_timestamp_us
+            );
+        }
+    }
+
+    pub(crate) fn maybe_log_periodic_summary(&mut self) {
+        let now = Instant::now().duration_since_epoch().as_micros() as u64;
+        if now.saturating_sub(self.last_summary_us) >= SUMMARY_PERIOD_US {
+            log_acquisition_summary(&self.stats, self.acquisition_start_us, now);
+            self.last_summary_us = now;
+        }
+    }
 }
 impl Default for AcquisitionStats {
     fn default() -> Self {
@@ -119,8 +164,12 @@ struct RawIntegrityStats {
     retry_error: u64,
 }
 #[cfg(target_arch = "riscv32")]
-pub(crate) fn log_acquisition_summary(stats: &AcquisitionStats, acquisition_start_us: u64, now_us: u64) {
-    let pending = critical_section::with(|cs| *INT_PENDING.borrow_ref(cs));
+pub(crate) fn log_acquisition_summary(
+    stats: &AcquisitionStats,
+    acquisition_start_us: u64,
+    now_us: u64,
+) {
+    let pending = pending_snapshot();
     println!(
         "acquisition_summary configured_nominal_rate_hz=200.0 measured_isr_event_rate_since_start_hz={:?} measured_consumed_event_rate_hz={:?} measured_sample_rate_hz={:?} isr_data_ready_total={} consumed_events={} missed_or_coalesced_events={} successful_samples={} current_pending={} max_pending={} events_unrecorded_due_to_pending_saturation={} motion_i2c_errors={} status_ack_i2c_errors={} total_i2c_errors={} first_consumed_us={:?} last_consumed_us={:?} first_sample_us={:?} last_sample_us={:?} successful_sample_read_completion_intervals={} successful_sample_interval_min_us={:?} successful_sample_interval_p50_us_approx_100us={:?} successful_sample_interval_max_us={:?}",
         if now_us > acquisition_start_us {
