@@ -14,6 +14,14 @@ impl InterruptEnable {
         self.bits & registers::INT_ENABLE_DATA_RDY != 0
     }
 
+    /// Returns true only when `DATA_RDY` is the complete `INT_ENABLE` byte.
+    ///
+    /// This is suitable for verifying that no unsupported interrupt sources
+    /// were retained by a read-modify-write operation.
+    pub const fn only_data_ready(self) -> bool {
+        self.bits == registers::INT_ENABLE_DATA_RDY
+    }
+
     /// Returns whether the FIFO-overflow interrupt is enabled.
     pub const fn fifo_overflow(self) -> bool {
         self.bits & registers::INT_ENABLE_FIFO_OFLOW != 0
@@ -196,6 +204,7 @@ mod tests {
 
         assert!(enable.data_ready());
         assert!(enable.fifo_overflow());
+        assert!(!enable.only_data_ready());
         assert!(!enable.none_enabled());
         assert!(mpu.release().operations.is_empty());
     }
@@ -212,12 +221,15 @@ mod tests {
 
         let data_ready = mpu.interrupt_enable().unwrap();
         assert!(data_ready.data_ready());
+        assert!(data_ready.only_data_ready());
         assert!(!data_ready.fifo_overflow());
         let fifo_overflow = mpu.interrupt_enable().unwrap();
         assert!(!fifo_overflow.data_ready());
         assert!(fifo_overflow.fifo_overflow());
         assert!(mpu.interrupt_enable().unwrap().none_enabled());
-        assert!(!mpu.interrupt_enable().unwrap().none_enabled());
+        let unsupported = mpu.interrupt_enable().unwrap();
+        assert!(!unsupported.none_enabled());
+        assert!(!unsupported.only_data_ready());
         assert!(mpu.release().operations.is_empty());
     }
 

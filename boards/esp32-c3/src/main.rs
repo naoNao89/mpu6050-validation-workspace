@@ -2,6 +2,9 @@
 #![cfg_attr(target_arch = "riscv32", no_main)]
 #![allow(dead_code)]
 
+#[cfg(target_arch = "riscv32")]
+esp_bootloader_esp_idf::esp_app_desc!();
+
 #[cfg(not(target_arch = "riscv32"))]
 fn main() {}
 
@@ -19,7 +22,7 @@ use esp_backtrace as _;
 #[cfg(target_arch = "riscv32")]
 use esp_hal::{
     delay::Delay,
-    gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
+    gpio::{Event, Input, InputConfig, Io, Level, Output, OutputConfig, Pull},
     i2c::master::{BusTimeout, Config as I2cConfig, I2c, SoftwareTimeout},
     main,
     time::{Duration, Instant, Rate},
@@ -36,7 +39,7 @@ const MPU_ADDR_AD0_LOW: u8 = 0x68;
 const MPU_ADDR_AD0_HIGH: u8 = 0x69;
 
 const FIFO_ACCEL_GYRO_FRAME_BYTES: u16 = 12;
-const RAW_STREAM_PERIOD_MS: u32 = 100;
+const BLOCKED_IDLE_DELAY_MS: u32 = 100;
 const TARGET_DLPF: Dlpf = Dlpf::Cfg2;
 // Exact value written to the MPU SMPLRT_DIV register.
 const TARGET_SMPLRT_DIV: u8 = 4;
@@ -46,6 +49,184 @@ const TARGET_SMPLRT_DIV: u8 = 4;
 const EXPECTED_NOMINAL_SAMPLE_RATE_HZ: f32 = 200.0;
 // Floating-point epsilon for the nominal-rate calculation, not a hardware tolerance.
 const NOMINAL_RATE_COMPARISON_EPSILON_HZ: f32 = 0.01;
+const RAW_EXAMPLE_LIMIT: u64 = 8;
+const SUMMARY_PERIOD_US: u64 = 1_000_000;
+
+#[derive(Default, Debug, Clone, Copy)]
+struct StartupConditions {
+    diagnostics_complete: bool,
+    timing_confirmed: bool,
+    final_interrupts_zero: bool,
+    gpio_configured: bool,
+    stale_status_cleared: bool,
+    enable_success: bool,
+    exact_data_ready_readback: bool,
+}
+
+trait DataReadyStartupDevice {
+    fn clear_int_status(&mut self) -> bool;
+    fn enable_data_ready(&mut self) -> bool;
+    fn only_data_ready_enabled(&mut self) -> Option<bool>;
+}
+
+fn configure_data_ready_startup(device: &mut impl DataReadyStartupDevice) -> StartupConditions {
+    let stale_status_cleared = device.clear_int_status();
+    let enable_success = stale_status_cleared && device.enable_data_ready();
+    let exact_data_ready_readback =
+        enable_success && device.only_data_ready_enabled().unwrap_or(false);
+    StartupConditions {
+        stale_status_cleared,
+        enable_success,
+        exact_data_ready_readback,
+        ..Default::default()
+    }
+}
+
+impl StartupConditions {
+    const fn allows_acquisition(self) -> bool {
+        self.diagnostics_complete
+            && self.timing_confirmed
+            && self.final_interrupts_zero
+            && self.gpio_configured
+            && self.stale_status_cleared
+            && self.enable_success
+            && self.exact_data_ready_readback
+    }
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+struct PendingEvents {
+    pending: u32,
+    max_pending: u32,
+    total: u64,
+    dropped: u64,
+}
+impl PendingEvents {
+    fn signal(&mut self) {
+        self.total = self.total.saturating_add(1);
+        if let Some(next) = self.pending.checked_add(1) {
+            self.pending = next;
+            self.max_pending = self.max_pending.max(next);
+        } else {
+            self.dropped = self.dropped.saturating_add(1);
+        }
+    }
+    fn consume(&mut self) -> bool {
+        if self.pending == 0 {
+            return false;
+        }
+        self.pending -= 1;
+        true
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AcquisitionStats {
+    consumed: u64,
+    successful_samples: u64,
+    motion_i2c_errors: u64,
+    status_ack_i2c_errors: u64,
+    first_event_us: Option<u64>,
+    last_event_us: Option<u64>,
+    first_sample_us: Option<u64>,
+    last_sample_us: Option<u64>,
+    interval_count: u64,
+    interval_min_us: Option<u64>,
+    interval_max_us: Option<u64>,
+    interval_histogram: [u32; 128],
+}
+impl Default for AcquisitionStats {
+    fn default() -> Self {
+        Self {
+            consumed: 0,
+            successful_samples: 0,
+            motion_i2c_errors: 0,
+            status_ack_i2c_errors: 0,
+            first_event_us: None,
+            last_event_us: None,
+            first_sample_us: None,
+            last_sample_us: None,
+            interval_count: 0,
+            interval_min_us: None,
+            interval_max_us: None,
+            interval_histogram: [0; 128],
+        }
+    }
+}
+impl AcquisitionStats {
+    fn event(&mut self, now: u64) {
+        self.first_event_us.get_or_insert(now);
+        self.last_event_us = Some(now);
+    }
+    fn sample(&mut self, now: u64) {
+        if let Some(previous) = self.last_sample_us {
+            let interval = now.saturating_sub(previous);
+            self.interval_count += 1;
+            self.interval_min_us = Some(
+                self.interval_min_us
+                    .map_or(interval, |value| value.min(interval)),
+            );
+            self.interval_max_us = Some(
+                self.interval_max_us
+                    .map_or(interval, |value| value.max(interval)),
+            );
+            let bin = ((interval / 100) as usize).min(127);
+            self.interval_histogram[bin] = self.interval_histogram[bin].saturating_add(1);
+        }
+        self.first_sample_us.get_or_insert(now);
+        self.last_sample_us = Some(now);
+        self.successful_samples += 1;
+    }
+    fn rate(count: u64, first: Option<u64>, last: Option<u64>) -> Option<f32> {
+        match (count, first, last) {
+            (2.., Some(first), Some(last)) if last > first => {
+                Some((count - 1) as f32 * 1_000_000.0 / (last - first) as f32)
+            }
+            _ => None,
+        }
+    }
+    fn interval_p50_us(&self) -> Option<u64> {
+        if self.interval_count == 0 {
+            return None;
+        }
+        let mut seen = 0u64;
+        for (bin, count) in self.interval_histogram.iter().enumerate() {
+            seen += *count as u64;
+            if seen * 2 >= self.interval_count {
+                return Some(bin as u64 * 100);
+            }
+        }
+        None
+    }
+}
+
+#[cfg(target_arch = "riscv32")]
+use core::cell::RefCell;
+#[cfg(target_arch = "riscv32")]
+use critical_section::Mutex;
+#[cfg(target_arch = "riscv32")]
+static GPIO6_INPUT: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
+#[cfg(target_arch = "riscv32")]
+static GPIO6_PENDING: Mutex<RefCell<PendingEvents>> = Mutex::new(RefCell::new(PendingEvents {
+    pending: 0,
+    max_pending: 0,
+    total: 0,
+    dropped: 0,
+}));
+
+#[cfg(target_arch = "riscv32")]
+#[esp_hal::handler]
+fn gpio6_data_ready_handler() {
+    critical_section::with(|cs| {
+        let mut input = GPIO6_INPUT.borrow_ref_mut(cs);
+        if let Some(input) = input.as_mut()
+            && input.is_interrupt_set()
+        {
+            input.clear_interrupt();
+            GPIO6_PENDING.borrow_ref_mut(cs).signal();
+        }
+    });
+}
 #[cfg(feature = "binary-frames")]
 const BINARY_FRAME_MAGIC: [u8; 2] = *b"IM";
 #[cfg(feature = "binary-frames")]
@@ -408,8 +589,24 @@ fn main() -> ! {
         AD0_PIN_NAME,
         INT_PIN_NAME
     );
+    println!("configured_nominal_sample_rate_hz=200.0 acquisition_mode=gpio6_data_ready_events");
+    let reset_reason = esp_hal::system::reset_reason();
+    let watchdog_reset = matches!(
+        reset_reason,
+        Some(
+            esp_hal::rtc_cntl::SocResetReason::CoreMwdt0
+                | esp_hal::rtc_cntl::SocResetReason::CoreMwdt1
+                | esp_hal::rtc_cntl::SocResetReason::CoreRtcWdt
+                | esp_hal::rtc_cntl::SocResetReason::Cpu0Mwdt0
+                | esp_hal::rtc_cntl::SocResetReason::Cpu0Mwdt1
+                | esp_hal::rtc_cntl::SocResetReason::Cpu0RtcWdt
+                | esp_hal::rtc_cntl::SocResetReason::SysRtcWdt
+                | esp_hal::rtc_cntl::SocResetReason::SysSuperWdt
+        )
+    );
     println!(
-        "target_sensor_sample_rate_hz=200.0 raw_stream_period_ms=100 acquisition_mode=periodic_snapshot"
+        "boot_reset_reason={:?} watchdog_reset_this_boot={} watchdog_count_this_boot={}",
+        reset_reason, watchdog_reset, watchdog_reset as u8
     );
 
     let scl_probe = Input::new(
@@ -464,41 +661,161 @@ fn main() -> ! {
     let mut mpu = Mpu6050::new(i2c, Address::Ad0Low);
     log_verification_summary(primary_probe);
     let validation = run_advanced_validation(&mut mpu, &delay, MPU_ADDR_AD0_LOW);
-    let startup_ready = stream_startup_allowed(
-        validation.interrupt_state_confirmed_zero,
-        validation.timing_registers_confirmed,
-    );
+    let mut conditions = StartupConditions {
+        diagnostics_complete: true,
+        timing_confirmed: validation.timing_registers_confirmed,
+        final_interrupts_zero: validation.interrupt_state_confirmed_zero,
+        ..Default::default()
+    };
     println!(
         "imu_interrupt_policy=explicit_opt_in sources_disabled={} timing_registers_confirmed={} status_polling=off",
         validation.interrupt_state_confirmed_zero, validation.timing_registers_confirmed
     );
 
-    if startup_ready {
-        println!(
-            "Repeating raw read from 0x68 every {}ms",
-            RAW_STREAM_PERIOD_MS
+    if conditions.diagnostics_complete
+        && conditions.timing_confirmed
+        && conditions.final_interrupts_zero
+    {
+        let mut io = Io::new(peripherals.IO_MUX);
+        io.set_interrupt_handler(gpio6_data_ready_handler);
+        let mut input = Input::new(
+            peripherals.GPIO6,
+            InputConfig::default().with_pull(Pull::None),
         );
-        let mut raw_sequence: u64 = 0;
-        let mut integrity_stats = RawIntegrityStats::default();
+        critical_section::with(|cs| {
+            input.listen(Event::RisingEdge);
+            GPIO6_INPUT.borrow_ref_mut(cs).replace(input);
+        });
+        conditions.gpio_configured = true;
+        let interrupt_conditions = configure_data_ready_startup(&mut mpu);
+        conditions.stale_status_cleared = interrupt_conditions.stale_status_cleared;
+        conditions.enable_success = interrupt_conditions.enable_success;
+        conditions.exact_data_ready_readback = interrupt_conditions.exact_data_ready_readback;
+    }
+    println!(
+        "data_ready_startup diagnostics_complete={} timing_confirmed={} final_interrupts_zero={} gpio_configured={} stale_status_cleared={} enable_success={} exact_data_ready_readback={} acquisition_started={}",
+        conditions.diagnostics_complete,
+        conditions.timing_confirmed,
+        conditions.final_interrupts_zero,
+        conditions.gpio_configured,
+        conditions.stale_status_cleared,
+        conditions.enable_success,
+        conditions.exact_data_ready_readback,
+        conditions.allows_acquisition()
+    );
+    if conditions.allows_acquisition() {
+        let mut stats = AcquisitionStats::default();
+        let acquisition_start_us = Instant::now().duration_since_epoch().as_micros() as u64;
+        let mut last_summary_us = acquisition_start_us;
         loop {
-            read_motion_sample_retry_once(
-                &mut mpu,
-                MPU_ADDR_AD0_LOW,
-                &mut raw_sequence,
-                &mut integrity_stats,
-            );
-            delay.delay_millis(RAW_STREAM_PERIOD_MS);
+            let consumed = critical_section::with(|cs| GPIO6_PENDING.borrow_ref_mut(cs).consume());
+            if consumed {
+                let now = Instant::now().duration_since_epoch().as_micros() as u64;
+                stats.consumed += 1;
+                stats.event(now);
+                let sample_for_output = match mpu.read_raw_accel_gyro_temp() {
+                    Ok(raw) => {
+                        let sample_now = Instant::now().duration_since_epoch().as_micros() as u64;
+                        stats.sample(sample_now);
+                        Some((raw, sample_now))
+                    }
+                    Err(_) => {
+                        stats.motion_i2c_errors += 1;
+                        None
+                    }
+                };
+                if mpu.int_status().is_err() {
+                    stats.status_ack_i2c_errors += 1;
+                }
+                if let Some((raw, sample_now)) = sample_for_output
+                    && stats.successful_samples <= RAW_EXAMPLE_LIMIT
+                {
+                    println!(
+                        "RAW event={} accel=({}, {}, {}) temp_raw={} gyro=({}, {}, {}) event_timestamp_us={} sample_timestamp_us={}",
+                        stats.consumed,
+                        raw.accel[0],
+                        raw.accel[1],
+                        raw.accel[2],
+                        raw.temp,
+                        raw.gyro[0],
+                        raw.gyro[1],
+                        raw.gyro[2],
+                        now,
+                        sample_now
+                    );
+                }
+            }
+            let now = Instant::now().duration_since_epoch().as_micros() as u64;
+            if now.saturating_sub(last_summary_us) >= SUMMARY_PERIOD_US {
+                log_acquisition_summary(&stats, acquisition_start_us, now);
+                last_summary_us = now;
+            }
         }
     }
 
-    println!("raw_stream_blocked");
+    println!("data_ready_acquisition_blocked");
     loop {
-        delay.delay_millis(RAW_STREAM_PERIOD_MS);
+        delay.delay_millis(BLOCKED_IDLE_DELAY_MS);
     }
 }
 
 #[cfg(target_arch = "riscv32")]
 type BoardMpu<'a> = Mpu6050<I2c<'a, esp_hal::Blocking>>;
+
+#[cfg(target_arch = "riscv32")]
+impl DataReadyStartupDevice for BoardMpu<'_> {
+    fn clear_int_status(&mut self) -> bool {
+        self.int_status().is_ok()
+    }
+
+    fn enable_data_ready(&mut self) -> bool {
+        self.enable_data_ready_interrupt().is_ok()
+    }
+
+    fn only_data_ready_enabled(&mut self) -> Option<bool> {
+        self.interrupt_enable()
+            .ok()
+            .map(|value| value.only_data_ready())
+    }
+}
+
+#[cfg(target_arch = "riscv32")]
+fn log_acquisition_summary(stats: &AcquisitionStats, acquisition_start_us: u64, now_us: u64) {
+    let pending = critical_section::with(|cs| *GPIO6_PENDING.borrow_ref(cs));
+    println!(
+        "acquisition_summary configured_nominal_rate_hz=200.0 measured_isr_event_rate_since_start_hz={:?} measured_consumed_event_rate_hz={:?} measured_sample_rate_hz={:?} isr_data_ready_total={} consumed_events={} successful_samples={} current_pending={} max_pending={} dropped_overflow={} motion_i2c_errors={} status_ack_i2c_errors={} total_i2c_errors={} first_event_us={:?} last_event_us={:?} first_sample_us={:?} last_sample_us={:?} sample_intervals={} interval_min_us={:?} interval_p50_us_approx_100us={:?} interval_max_us={:?}",
+        if now_us > acquisition_start_us {
+            Some(pending.total as f32 * 1_000_000.0 / (now_us - acquisition_start_us) as f32)
+        } else {
+            None
+        },
+        AcquisitionStats::rate(stats.consumed, stats.first_event_us, stats.last_event_us),
+        AcquisitionStats::rate(
+            stats.successful_samples,
+            stats.first_sample_us,
+            stats.last_sample_us
+        ),
+        pending.total,
+        stats.consumed,
+        stats.successful_samples,
+        pending.pending,
+        pending.max_pending,
+        pending.dropped,
+        stats.motion_i2c_errors,
+        stats.status_ack_i2c_errors,
+        stats
+            .motion_i2c_errors
+            .saturating_add(stats.status_ack_i2c_errors),
+        stats.first_event_us,
+        stats.last_event_us,
+        stats.first_sample_us,
+        stats.last_sample_us,
+        stats.interval_count,
+        stats.interval_min_us,
+        stats.interval_p50_us(),
+        stats.interval_max_us
+    );
+}
 
 #[cfg(target_arch = "riscv32")]
 impl SampleTimingDevice for BoardMpu<'_> {
@@ -1275,7 +1592,6 @@ mod tests {
             (TARGET_DLPF.sample_rate_hz(TARGET_SMPLRT_DIV) - EXPECTED_NOMINAL_SAMPLE_RATE_HZ).abs()
                 <= NOMINAL_RATE_COMPARISON_EPSILON_HZ
         );
-        assert_eq!(RAW_STREAM_PERIOD_MS, 100);
         assert_eq!(accel_range_from_setting(0), AccelRange::G2);
         assert_eq!(gyro_range_from_setting(0), GyroRange::Dps250);
         assert!(calculated_rate_valid(Some(200.0)));
@@ -1428,5 +1744,200 @@ mod tests {
             matches!(skipped, Some(Ok(_)))
         ));
         assert!(stream_startup_allowed(true, matches!(ok, Some(Ok(_)))));
+    }
+
+    #[test]
+    fn acquisition_requires_diagnostics_and_timing() {
+        let complete = StartupConditions {
+            diagnostics_complete: true,
+            timing_confirmed: true,
+            final_interrupts_zero: true,
+            gpio_configured: true,
+            stale_status_cleared: true,
+            enable_success: true,
+            exact_data_ready_readback: true,
+        };
+        assert!(complete.allows_acquisition());
+        let mut missing = complete;
+        missing.diagnostics_complete = false;
+        assert!(!missing.allows_acquisition());
+        missing = complete;
+        missing.timing_confirmed = false;
+        assert!(!missing.allows_acquisition());
+    }
+
+    #[test]
+    fn acquisition_requires_gpio_and_exact_readback_and_enable() {
+        let complete = StartupConditions {
+            diagnostics_complete: true,
+            timing_confirmed: true,
+            final_interrupts_zero: true,
+            gpio_configured: true,
+            stale_status_cleared: true,
+            enable_success: true,
+            exact_data_ready_readback: true,
+        };
+        for condition in [
+            StartupConditions {
+                gpio_configured: false,
+                ..complete
+            },
+            StartupConditions {
+                enable_success: false,
+                ..complete
+            },
+            StartupConditions {
+                exact_data_ready_readback: false,
+                ..complete
+            },
+        ] {
+            assert!(!condition.allows_acquisition());
+        }
+    }
+
+    #[test]
+    fn pending_events_are_not_collapsed() {
+        let mut pending = PendingEvents::default();
+        pending.signal();
+        pending.signal();
+        pending.signal();
+        assert_eq!(
+            (pending.total, pending.pending, pending.max_pending),
+            (3, 3, 3)
+        );
+        assert!(pending.consume());
+        assert!(pending.consume());
+        assert!(pending.consume());
+        assert!(!pending.consume());
+    }
+
+    #[test]
+    fn pending_events_saturate_and_record_overflow() {
+        let mut pending = PendingEvents {
+            pending: u32::MAX,
+            max_pending: u32::MAX,
+            total: 9,
+            dropped: 0,
+        };
+        pending.signal();
+        assert_eq!(pending.pending, u32::MAX);
+        assert_eq!(pending.total, 10);
+        assert_eq!(pending.dropped, 1);
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum StartupCall {
+        Clear,
+        Enable,
+        Readback,
+    }
+
+    struct FakeDataReadyDevice {
+        clear: bool,
+        enable: bool,
+        readback: Option<bool>,
+        calls: Vec<StartupCall>,
+    }
+
+    impl DataReadyStartupDevice for FakeDataReadyDevice {
+        fn clear_int_status(&mut self) -> bool {
+            self.calls.push(StartupCall::Clear);
+            self.clear
+        }
+        fn enable_data_ready(&mut self) -> bool {
+            self.calls.push(StartupCall::Enable);
+            self.enable
+        }
+        fn only_data_ready_enabled(&mut self) -> Option<bool> {
+            self.calls.push(StartupCall::Readback);
+            self.readback
+        }
+    }
+
+    #[test]
+    fn data_ready_startup_stops_after_failed_stale_clear() {
+        let mut device = FakeDataReadyDevice {
+            clear: false,
+            enable: true,
+            readback: Some(true),
+            calls: Vec::new(),
+        };
+        let conditions = configure_data_ready_startup(&mut device);
+        assert!(!conditions.stale_status_cleared);
+        assert_eq!(device.calls, vec![StartupCall::Clear]);
+    }
+
+    #[test]
+    fn data_ready_startup_stops_after_failed_enable() {
+        let mut device = FakeDataReadyDevice {
+            clear: true,
+            enable: false,
+            readback: Some(true),
+            calls: Vec::new(),
+        };
+        let conditions = configure_data_ready_startup(&mut device);
+        assert!(!conditions.enable_success);
+        assert_eq!(device.calls, vec![StartupCall::Clear, StartupCall::Enable]);
+    }
+
+    #[test]
+    fn data_ready_startup_requires_readable_exact_readback() {
+        for readback in [None, Some(false)] {
+            let mut device = FakeDataReadyDevice {
+                clear: true,
+                enable: true,
+                readback,
+                calls: Vec::new(),
+            };
+            let conditions = configure_data_ready_startup(&mut device);
+            assert!(!conditions.exact_data_ready_readback);
+            assert_eq!(
+                device.calls,
+                vec![
+                    StartupCall::Clear,
+                    StartupCall::Enable,
+                    StartupCall::Readback
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn data_ready_startup_orders_clear_enable_then_exact_readback() {
+        let mut device = FakeDataReadyDevice {
+            clear: true,
+            enable: true,
+            readback: Some(true),
+            calls: Vec::new(),
+        };
+        let conditions = configure_data_ready_startup(&mut device);
+        assert!(
+            conditions.stale_status_cleared
+                && conditions.enable_success
+                && conditions.exact_data_ready_readback
+        );
+        assert_eq!(
+            device.calls,
+            vec![
+                StartupCall::Clear,
+                StartupCall::Enable,
+                StartupCall::Readback
+            ]
+        );
+    }
+
+    #[test]
+    fn zero_and_one_sample_statistics_are_safe() {
+        let mut stats = AcquisitionStats::default();
+        assert_eq!(AcquisitionStats::rate(0, None, None), None);
+        assert_eq!(stats.interval_p50_us(), None);
+        stats.event(10);
+        stats.sample(10);
+        assert_eq!(
+            AcquisitionStats::rate(1, stats.first_sample_us, stats.last_sample_us),
+            None
+        );
+        assert_eq!(stats.interval_count, 0);
+        assert_eq!(stats.interval_p50_us(), None);
     }
 }

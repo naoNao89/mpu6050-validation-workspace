@@ -15,3 +15,5 @@ mpu6050-driver = "0.1.0"
 esp-backtrace = { version = "0.18.0", features = ["esp32c3", "panic-handler", "println"] }
 esp-hal = { version = "1.1.1", features = ["esp32c3", "unstable"] }
 esp-println = { version = "0.16.1", features = ["esp32c3", "log-04"] }
+critical-section = "1.2.0"
+esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32c3"] }
