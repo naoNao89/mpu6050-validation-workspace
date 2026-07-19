@@ -256,9 +256,7 @@ fn read_serial_binary_for<W: Write>(
                             writeln!(out, "{line}")?;
                         }
                         BinaryDecodeEvent::PreambleSync { discarded_bytes } => {
-                            eprintln!(
-                                "binary_sync discarded_preamble_bytes={discarded_bytes}"
-                            );
+                            eprintln!("binary_sync discarded_preamble_bytes={discarded_bytes}");
                         }
                         BinaryDecodeEvent::StreamRestart {
                             previous_sequence,
@@ -302,9 +300,7 @@ pub fn capture(port: &str, baud: u32, seconds: f64, out: &Path, mode: StreamMode
     );
     match mode {
         StreamMode::Text => read_serial_for(&mut *ser, seconds, &mut f, |_| {})?,
-        StreamMode::Binary => {
-            read_serial_binary_for(&mut *ser, Some(seconds), &mut f, None, true)?
-        }
+        StreamMode::Binary => read_serial_binary_for(&mut *ser, Some(seconds), &mut f, None, true)?,
     }
     writeln!(f, "\n# capture_end")?;
     Ok(0)
@@ -865,7 +861,9 @@ pub fn encode_binary_frame(s: &RawSample) -> [u8; BINARY_FRAME_LEN] {
 pub enum BinaryDecodeEvent {
     Sample(RawSample),
     /// Startup/text bytes discarded before the first valid frame of a stream.
-    PreambleSync { discarded_bytes: usize },
+    PreambleSync {
+        discarded_bytes: usize,
+    },
     /// Firmware appears to have restarted (sequence and device timestamp both reset).
     StreamRestart {
         previous_sequence: u64,
