@@ -75,13 +75,12 @@ fn open_serial(
     port: &str,
     baud: u32,
 ) -> Result<Box<dyn serialport::SerialPort>, serialport::Error> {
-    let mut ser = serialport::new(port, baud)
+    // Do not toggle DTR/RTS after open: on ESP32-C3 USB-serial bridges those
+    // lines drive EN/boot and will reset the chip mid-stream.
+    serialport::new(port, baud)
         .timeout(Duration::from_millis(500))
-        .open()?;
-    let _ = ser.write_data_terminal_ready(false);
-    let _ = ser.write_request_to_send(false);
-    std::thread::sleep(Duration::from_millis(200));
-    Ok(ser)
+        .preserve_dtr_on_open()
+        .open()
 }
 
 fn write_parent(path: &Path) -> io::Result<()> {
@@ -237,6 +236,7 @@ fn read_serial_binary_for<W: Write>(
     seconds: Option<f64>,
     out: &mut W,
     mut stats: Option<&mut IntegrityStats>,
+    fail_on_stream_restart: bool,
 ) -> io::Result<()> {
     let deadline = monitor_deadline(seconds, Instant::now());
     let mut buf = [0u8; 2048];
@@ -254,6 +254,27 @@ fn read_serial_binary_for<W: Write>(
                             let line = raw_sample_line(&s);
                             println!("{line}");
                             writeln!(out, "{line}")?;
+                        }
+                        BinaryDecodeEvent::PreambleSync { discarded_bytes } => {
+                            eprintln!(
+                                "binary_sync discarded_preamble_bytes={discarded_bytes}"
+                            );
+                        }
+                        BinaryDecodeEvent::StreamRestart {
+                            previous_sequence,
+                            current_sequence,
+                        } => {
+                            eprintln!(
+                                "binary_stream_restart previous_sequence={previous_sequence} current_sequence={current_sequence}"
+                            );
+                            if fail_on_stream_restart {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "binary stream restart previous_sequence={previous_sequence} current_sequence={current_sequence}"
+                                    ),
+                                ));
+                            }
                         }
                         BinaryDecodeEvent::Warning(w) => eprintln!("binary_frame_warning: {w}"),
                     }
@@ -281,7 +302,9 @@ pub fn capture(port: &str, baud: u32, seconds: f64, out: &Path, mode: StreamMode
     );
     match mode {
         StreamMode::Text => read_serial_for(&mut *ser, seconds, &mut f, |_| {})?,
-        StreamMode::Binary => read_serial_binary_for(&mut *ser, Some(seconds), &mut f, None)?,
+        StreamMode::Binary => {
+            read_serial_binary_for(&mut *ser, Some(seconds), &mut f, None, true)?
+        }
     }
     writeln!(f, "\n# capture_end")?;
     Ok(0)
@@ -305,9 +328,16 @@ pub fn monitor(
     let mut stats = IntegrityStats::default();
     if mode == StreamMode::Binary {
         let result = if let Some(f) = log.as_mut() {
-            read_serial_binary_for(&mut *ser, duration, f, Some(&mut stats))
+            // Monitor keeps going after a restart but surfaces it explicitly.
+            read_serial_binary_for(&mut *ser, duration, f, Some(&mut stats), false)
         } else {
-            read_serial_binary_for(&mut *ser, duration, &mut io::sink(), Some(&mut stats))
+            read_serial_binary_for(
+                &mut *ser,
+                duration,
+                &mut io::sink(),
+                Some(&mut stats),
+                false,
+            )
         };
         emit_integrity_stats(&stats, log.as_mut())?;
         result?;
@@ -825,6 +855,13 @@ pub fn encode_binary_frame(s: &RawSample) -> [u8; BINARY_FRAME_LEN] {
 #[derive(Debug, PartialEq)]
 pub enum BinaryDecodeEvent {
     Sample(RawSample),
+    /// Startup/text bytes discarded before the first valid frame of a stream.
+    PreambleSync { discarded_bytes: usize },
+    /// Firmware appears to have restarted (sequence and device timestamp both reset).
+    StreamRestart {
+        previous_sequence: u64,
+        current_sequence: u64,
+    },
     Warning(String),
 }
 
@@ -832,31 +869,61 @@ pub enum BinaryDecodeEvent {
 pub struct BinaryFrameDecoder {
     buf: Vec<u8>,
     last_seq: Option<u64>,
+    last_timestamp_us: Option<u64>,
+    seen_sample: bool,
+    preamble_discarded: usize,
 }
 
 impl BinaryFrameDecoder {
     pub fn new() -> Self {
         Self::default()
     }
+
+    fn note_discard(&mut self, ev: &mut Vec<BinaryDecodeEvent>, n: usize) {
+        if n == 0 {
+            return;
+        }
+        if !self.seen_sample {
+            self.preamble_discarded = self.preamble_discarded.saturating_add(n);
+        } else {
+            ev.push(BinaryDecodeEvent::Warning(format!(
+                "discarded {n} byte(s) before magic"
+            )));
+        }
+    }
+
+    fn emit_preamble_sync_if_needed(&mut self, ev: &mut Vec<BinaryDecodeEvent>) {
+        if self.seen_sample || self.preamble_discarded == 0 {
+            return;
+        }
+        ev.push(BinaryDecodeEvent::PreambleSync {
+            discarded_bytes: self.preamble_discarded,
+        });
+        self.preamble_discarded = 0;
+    }
+
     pub fn push(&mut self, bytes: &[u8]) -> Vec<BinaryDecodeEvent> {
         self.buf.extend_from_slice(bytes);
         let mut ev = Vec::new();
         loop {
             let Some(pos) = self.buf.windows(2).position(|w| w == BINARY_FRAME_MAGIC) else {
-                if !self.buf.is_empty() {
-                    ev.push(BinaryDecodeEvent::Warning(format!(
-                        "discarded {} byte(s) before magic",
-                        self.buf.len()
-                    )));
+                // Keep a trailing 'I' — it may be the first magic byte of the next read.
+                if self.buf.last() == Some(&BINARY_FRAME_MAGIC[0]) {
+                    let discard = self.buf.len() - 1;
+                    if discard > 0 {
+                        self.note_discard(&mut ev, discard);
+                        self.buf.drain(..discard);
+                    }
+                } else if !self.buf.is_empty() {
+                    let n = self.buf.len();
+                    self.note_discard(&mut ev, n);
                     self.buf.clear();
                 }
                 break;
             };
             if pos > 0 {
+                self.note_discard(&mut ev, pos);
                 self.buf.drain(..pos);
-                ev.push(BinaryDecodeEvent::Warning(format!(
-                    "discarded {pos} byte(s) before magic"
-                )));
             }
             if self.buf.len() < BINARY_FRAME_LEN {
                 break;
@@ -882,16 +949,26 @@ impl BinaryFrameDecoder {
                 continue;
             }
             let seq = u64::from_le_bytes(self.buf[6..14].try_into().unwrap());
-            if let Some(prev) = self.last_seq
-                && seq != prev.wrapping_add(1)
-            {
-                ev.push(BinaryDecodeEvent::Warning(format!(
-                    "sequence gap previous={prev} current={seq}"
-                )));
+            let ts = u64::from_le_bytes(self.buf[14..22].try_into().unwrap());
+            if let (Some(prev), Some(prev_ts)) = (self.last_seq, self.last_timestamp_us) {
+                let is_restart = seq == 0 && prev != 0 && ts < prev_ts;
+                if is_restart {
+                    ev.push(BinaryDecodeEvent::StreamRestart {
+                        previous_sequence: prev,
+                        current_sequence: seq,
+                    });
+                    // New firmware session: preamble accounting restarts.
+                    self.seen_sample = false;
+                    self.preamble_discarded = 0;
+                } else if seq != prev.wrapping_add(1) {
+                    ev.push(BinaryDecodeEvent::Warning(format!(
+                        "sequence gap previous={prev} current={seq}"
+                    )));
+                }
             }
             self.last_seq = Some(seq);
+            self.last_timestamp_us = Some(ts);
             let i16le = |o| i16::from_le_bytes([self.buf[o], self.buf[o + 1]]) as i32;
-            let ts = u64::from_le_bytes(self.buf[14..22].try_into().unwrap());
             let address = self.buf[4] as i32;
             let ax = i16le(22);
             let ay = i16le(24);
@@ -915,6 +992,8 @@ impl BinaryFrameDecoder {
                     "suspicious sample address=0x{address:02x} sequence={seq}: {reason}"
                 )));
             }
+            self.emit_preamble_sync_if_needed(&mut ev);
+            self.seen_sample = true;
             ev.push(BinaryDecodeEvent::Sample(RawSample {
                 address,
                 ax,
@@ -1846,8 +1925,11 @@ mod tests {
         bytes.extend_from_slice(&good);
         let ev = BinaryFrameDecoder::new().push(&bytes);
         assert!(
-            ev.iter()
-                .any(|e| matches!(e, BinaryDecodeEvent::Warning(w) if w.contains("discarded")))
+            ev.iter().any(|e| matches!(
+                e,
+                BinaryDecodeEvent::PreambleSync { discarded_bytes } if *discarded_bytes > 0
+            )),
+            "junk/corrupt bytes before first good frame should coalesce into preamble sync, got {ev:?}"
         );
         assert!(
             ev.iter()
@@ -1869,6 +1951,98 @@ mod tests {
         assert!(
             ev.iter()
                 .any(|e| matches!(e, BinaryDecodeEvent::Warning(w) if w.contains("sequence gap")))
+        );
+    }
+
+    #[test]
+    fn binary_decoder_keeps_partial_magic_across_reads() {
+        let s = sample_with_timing(Some(0.001), Some(0));
+        let frame = encode_binary_frame(&s);
+        // Split between magic bytes 'I' and 'M'.
+        let mut d = BinaryFrameDecoder::new();
+        assert!(d.push(&frame[..1]).is_empty());
+        let ev = d.push(&frame[1..]);
+        assert_eq!(ev, vec![BinaryDecodeEvent::Sample(s.clone())]);
+    }
+
+    #[test]
+    fn binary_decoder_accepts_frame_at_every_split_position() {
+        let s = sample_with_timing(Some(1.5), Some(9));
+        let frame = encode_binary_frame(&s);
+        for split in 0..=frame.len() {
+            let mut d = BinaryFrameDecoder::new();
+            let mut samples = Vec::new();
+            for ev in d.push(&frame[..split]) {
+                if let BinaryDecodeEvent::Sample(sample) = ev {
+                    samples.push(sample);
+                }
+            }
+            for ev in d.push(&frame[split..]) {
+                if let BinaryDecodeEvent::Sample(sample) = ev {
+                    samples.push(sample);
+                }
+            }
+            assert_eq!(samples, vec![s.clone()], "failed at split={split}");
+        }
+    }
+
+    #[test]
+    fn binary_decoder_coalesces_preamble_discards_before_first_sample() {
+        let s = sample_with_timing(Some(0.01), Some(0));
+        let frame = encode_binary_frame(&s);
+        let mut d = BinaryFrameDecoder::new();
+        let mut junk = Vec::from(b"boot text line one\nboot text line two\n".as_slice());
+        junk.push(b'I'); // partial magic retained across push
+        let ev1 = d.push(&junk);
+        assert!(
+            ev1.iter()
+                .all(|e| !matches!(e, BinaryDecodeEvent::Warning(_))),
+            "preamble should not emit per-chunk discard warnings, got {ev1:?}"
+        );
+        // Trailing 'I' was kept; complete the frame from 'M' onward.
+        let ev2 = d.push(&frame[1..]);
+        assert!(
+            ev2.iter().any(|e| matches!(
+                e,
+                BinaryDecodeEvent::PreambleSync { discarded_bytes }
+                    if *discarded_bytes >= 20
+            )),
+            "expected coalesced preamble sync, got {ev2:?}"
+        );
+        assert!(
+            ev2.iter()
+                .any(|e| matches!(e, BinaryDecodeEvent::Sample(sample) if sample == &s))
+        );
+    }
+
+    #[test]
+    fn binary_decoder_reports_stream_restart_on_seq_and_timestamp_reset() {
+        let mut d = BinaryFrameDecoder::new();
+        let old = sample_with_timing(Some(3.646193), Some(586));
+        let fresh = sample_with_timing(Some(0.736621), Some(0));
+        assert!(matches!(
+            d.push(&encode_binary_frame(&old)).as_slice(),
+            [BinaryDecodeEvent::Sample(_)]
+        ));
+        let ev = d.push(&encode_binary_frame(&fresh));
+        assert!(
+            ev.iter().any(|e| matches!(
+                e,
+                BinaryDecodeEvent::StreamRestart {
+                    previous_sequence: 586,
+                    current_sequence: 0,
+                }
+            )),
+            "expected stream restart, got {ev:?}"
+        );
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, BinaryDecodeEvent::Sample(sample) if sample == &fresh))
+        );
+        assert!(
+            !ev.iter()
+                .any(|e| matches!(e, BinaryDecodeEvent::Warning(w) if w.contains("sequence gap"))),
+            "restart must not be reported as a plain sequence gap"
         );
     }
 
