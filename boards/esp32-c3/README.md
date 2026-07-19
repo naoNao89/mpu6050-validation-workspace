@@ -30,6 +30,21 @@ make build
 ./run.sh
 ```
 
+Continuous binary motion stream (v1 frames for `imu-tool --mode binary`):
+
+```sh
+MODE=binary DURATION=30 LOG_FILE=logs/motion-binary.log ./run.sh
+```
+
+`MODE=binary` builds with `--features binary-frames`. Default text mode is unchanged.
+
+Binary frame `timestamp_us` values are device-side successful **read-completion**
+timestamps (after the motion I²C read finishes), not the original GPIO data-ready
+edge time. Frame `sequence` values track **emitted frames** and detect transport
+loss or decode gaps; they do not encode coalesced data-ready events or failed
+sensor reads. `LOG_FILE` in binary mode is a **decoded text sample log** written
+by `imu-tool`, not a raw byte capture of the serial stream.
+
 Check the firmware without building host-only workspace members for the embedded
 target:
 

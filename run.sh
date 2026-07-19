@@ -9,6 +9,7 @@
 #   NO_LOG=1 ./run.sh
 #   LOG_FILE=logs/mpu6050.log ./run.sh
 #   DURATION=300 ./run.sh
+#   MODE=binary DURATION=30 LOG_FILE=logs/motion-binary.log ./run.sh
 
 set -euo pipefail
 
@@ -34,8 +35,13 @@ if [ "${NO_LOG:-0}" != "1" ] && [ -z "$LOG_FILE" ]; then
   LOG_FILE="$LOG_DIR/mpu6050-$(date +%Y%m%d-%H%M%S).log"
 fi
 
-echo "--- build release firmware for ${TARGET} ---"
-env -u RUSTFLAGS CARGO_TARGET_DIR=target cargo --config 'patch.crates-io.mpu6050-driver.path="crates/mpu6050-driver"' build --manifest-path boards/esp32-c3/Cargo.toml --release --target "$TARGET"
+build_args=(--manifest-path boards/esp32-c3/Cargo.toml --release --target "$TARGET")
+if [ "$MODE" = "binary" ]; then
+  build_args+=(--features binary-frames)
+fi
+
+echo "--- build release firmware for ${TARGET} (mode=${MODE}) ---"
+env -u RUSTFLAGS CARGO_TARGET_DIR=target cargo --config 'patch.crates-io.mpu6050-driver.path="crates/mpu6050-driver"' build "${build_args[@]}"
 
 if [ "${NO_FLASH:-0}" != "1" ]; then
   echo "--- flash ${PORT} ---"

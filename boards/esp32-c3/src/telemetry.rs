@@ -1,4 +1,4 @@
-#[cfg(target_arch = "riscv32")]
+#[cfg(all(not(feature = "binary-frames"), target_arch = "riscv32"))]
 use crate::acquisition::{AcquisitionStats, pending_snapshot};
 #[cfg(target_arch = "riscv32")]
 use crate::startup::BoardMpu;
@@ -10,13 +10,15 @@ use esp_hal::time::Instant;
 use esp_println::Printer;
 #[cfg(target_arch = "riscv32")]
 use esp_println::println;
+#[cfg(any(target_arch = "riscv32", feature = "binary-frames"))]
+use mpu6050_driver::RawAccelGyroTemp;
 #[cfg(target_arch = "riscv32")]
-use mpu6050_driver::{RawAccelGyroTemp, RawReadOutcome, RawRetryPolicy};
+use mpu6050_driver::{RawReadOutcome, RawRetryPolicy};
 
 pub(crate) const RAW_EXAMPLE_LIMIT: u64 = 8;
 pub(crate) const SUMMARY_PERIOD_US: u64 = 1_000_000;
 
-#[cfg(target_arch = "riscv32")]
+#[cfg(all(not(feature = "binary-frames"), target_arch = "riscv32"))]
 pub(crate) fn maybe_log_raw_example(
     stats: &AcquisitionStats,
     raw: &RawAccelGyroTemp,
@@ -47,6 +49,46 @@ const BINARY_FRAME_VERSION: u8 = 1;
 const BINARY_FRAME_PAYLOAD_LEN: u8 = 32;
 #[cfg(feature = "binary-frames")]
 const BINARY_FRAME_LEN: usize = 38;
+
+/// Build one v1 binary frame for a successful data-ready sample, if present.
+///
+/// Sequence is incremented only when a frame is produced.
+#[cfg(feature = "binary-frames")]
+pub(crate) fn take_binary_sample_frame(
+    address: u8,
+    sequence: &mut u64,
+    sample: Option<&RawAccelGyroTemp>,
+    successful_sample_timestamp_us: Option<u64>,
+) -> Option<[u8; BINARY_FRAME_LEN]> {
+    let (raw, timestamp_us) = match (sample, successful_sample_timestamp_us) {
+        (Some(raw), Some(timestamp_us)) => (raw, timestamp_us),
+        _ => return None,
+    };
+    let frame = encode_binary_frame(
+        address,
+        *sequence,
+        timestamp_us,
+        raw.accel,
+        raw.temp,
+        raw.gyro,
+    );
+    *sequence = sequence.wrapping_add(1);
+    Some(frame)
+}
+
+#[cfg(all(feature = "binary-frames", target_arch = "riscv32"))]
+pub(crate) fn emit_binary_sample_frame(
+    address: u8,
+    sequence: &mut u64,
+    sample: Option<&RawAccelGyroTemp>,
+    successful_sample_timestamp_us: Option<u64>,
+) {
+    if let Some(frame) =
+        take_binary_sample_frame(address, sequence, sample, successful_sample_timestamp_us)
+    {
+        Printer::write_bytes(&frame);
+    }
+}
 #[derive(Debug, Default, Clone, Copy)]
 struct RawIntegrityStats {
     total_reads: u64,
@@ -57,7 +99,7 @@ struct RawIntegrityStats {
     accepted_suspicious: u64,
     retry_error: u64,
 }
-#[cfg(target_arch = "riscv32")]
+#[cfg(all(not(feature = "binary-frames"), target_arch = "riscv32"))]
 pub(crate) fn log_acquisition_summary(
     stats: &AcquisitionStats,
     acquisition_start_us: u64,
@@ -288,7 +330,7 @@ fn log_suspicious_sample(reason: &str, address: u8, sequence: u64, raw: RawAccel
     let _ = (reason, address, sequence, raw);
 }
 
-#[cfg(all(feature = "binary-frames", target_arch = "riscv32"))]
+#[cfg(feature = "binary-frames")]
 fn encode_binary_frame(
     address: u8,
     sequence: u64,
@@ -334,4 +376,100 @@ fn crc16_ccitt_false(data: &[u8]) -> u16 {
         }
     }
     crc
+}
+
+#[cfg(all(test, feature = "binary-frames"))]
+mod tests {
+    use super::*;
+
+    fn sample(accel: [i16; 3], temp: i16, gyro: [i16; 3]) -> RawAccelGyroTemp {
+        RawAccelGyroTemp::new(accel, temp, gyro)
+    }
+
+    #[test]
+    fn no_frame_for_failed_motion_read() {
+        let mut sequence = 3u64;
+        assert!(
+            take_binary_sample_frame(0x68, &mut sequence, None, None).is_none()
+        );
+        assert!(
+            take_binary_sample_frame(0x68, &mut sequence, None, Some(1)).is_none()
+        );
+        assert_eq!(sequence, 3);
+    }
+
+    #[test]
+    fn sample_timestamp_pair_required_for_frame() {
+        let mut sequence = 0u64;
+        let raw = sample([1, 2, 3], 4, [5, 6, 7]);
+        assert!(
+            take_binary_sample_frame(0x68, &mut sequence, Some(&raw), None).is_none()
+        );
+        assert_eq!(sequence, 0);
+        let frame =
+            take_binary_sample_frame(0x68, &mut sequence, Some(&raw), Some(1_234_567)).unwrap();
+        assert_eq!(sequence, 1);
+        assert_eq!(u64::from_le_bytes(frame[14..22].try_into().unwrap()), 1_234_567);
+    }
+
+    #[test]
+    fn one_drain_outcome_emits_at_most_one_frame() {
+        let mut sequence = 0u64;
+        let raw = sample([10, 20, 30], 40, [50, 60, 70]);
+        // One successful drain outcome still yields one frame (batching is covered
+        // in acquisition::tests with batch_count > 1).
+        let frames: Vec<_> = [Some(&raw)]
+            .into_iter()
+            .filter_map(|sample| {
+                take_binary_sample_frame(0x68, &mut sequence, sample, Some(100))
+            })
+            .collect();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(sequence, 1);
+    }
+
+    #[test]
+    fn emitted_sequences_are_consecutive() {
+        let mut sequence = 0u64;
+        let raw = sample([-1, 0, 1], 2, [3, 4, 5]);
+        let mut seqs = Vec::new();
+        for ts in [10u64, 20, 30] {
+            let frame =
+                take_binary_sample_frame(0x69, &mut sequence, Some(&raw), Some(ts)).unwrap();
+            seqs.push(u64::from_le_bytes(frame[6..14].try_into().unwrap()));
+        }
+        assert_eq!(seqs, vec![0, 1, 2]);
+        assert_eq!(sequence, 3);
+    }
+
+    #[test]
+    fn binary_frame_v1_little_endian_layout_and_crc() {
+        let frame = encode_binary_frame(
+            0x68,
+            7,
+            99_000,
+            [100, -200, 300],
+            -40,
+            [1_000, -2_000, 3_000],
+        );
+        assert_eq!(&frame[0..2], b"IM");
+        assert_eq!(frame[2], BINARY_FRAME_VERSION);
+        assert_eq!(frame[3], BINARY_FRAME_PAYLOAD_LEN);
+        assert_eq!(frame[4], 0x68);
+        assert_eq!(frame[5], 0);
+        assert_eq!(u64::from_le_bytes(frame[6..14].try_into().unwrap()), 7);
+        assert_eq!(u64::from_le_bytes(frame[14..22].try_into().unwrap()), 99_000);
+        assert_eq!(i16::from_le_bytes(frame[22..24].try_into().unwrap()), 100);
+        assert_eq!(i16::from_le_bytes(frame[24..26].try_into().unwrap()), -200);
+        assert_eq!(i16::from_le_bytes(frame[26..28].try_into().unwrap()), 300);
+        assert_eq!(i16::from_le_bytes(frame[28..30].try_into().unwrap()), -40);
+        assert_eq!(i16::from_le_bytes(frame[30..32].try_into().unwrap()), 1_000);
+        assert_eq!(i16::from_le_bytes(frame[32..34].try_into().unwrap()), -2_000);
+        assert_eq!(i16::from_le_bytes(frame[34..36].try_into().unwrap()), 3_000);
+        let want = crc16_ccitt_false(&frame[..BINARY_FRAME_LEN - 2]);
+        let got = u16::from_le_bytes(frame[BINARY_FRAME_LEN - 2..].try_into().unwrap());
+        assert_eq!(got, want);
+        // Host decoder CRC polynomial/init match (CCITT-FALSE).
+        assert_eq!(want, 0x4ee8);
+    }
 }

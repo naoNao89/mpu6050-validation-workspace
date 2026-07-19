@@ -53,6 +53,17 @@ Flash and monitor:
 ./run.sh
 ```
 
+Binary sample stream (data-ready → v1 frames, host `imu-tool --mode binary`):
+
+```bash
+MODE=binary DURATION=30 LOG_FILE=logs/motion-binary.log ./run.sh
+```
+
+Binary frame timestamps are device-side successful read-completion times, not
+data-ready edge times. Frame sequences track emitted frames (transport integrity),
+not coalesced ISR events or failed reads. `LOG_FILE` is decoded text samples, not
+a raw binary capture.
+
 Override serial port:
 
 ```bash

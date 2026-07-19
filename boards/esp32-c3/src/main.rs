@@ -21,8 +21,10 @@ use esp_hal::{
     delay::Delay,
     i2c::master::{BusTimeout, Config as I2cConfig, I2c, SoftwareTimeout},
     main,
-    time::{Duration, Instant, Rate},
+    time::{Duration, Rate},
 };
+#[cfg(all(not(feature = "binary-frames"), target_arch = "riscv32"))]
+use esp_hal::time::Instant;
 #[cfg(target_arch = "riscv32")]
 use esp_println::println;
 
@@ -65,18 +67,37 @@ fn main() -> ! {
 
     if conditions.allows_acquisition() {
         let mut stats = acquisition::AcquisitionStats::default();
+        #[cfg(feature = "binary-frames")]
+        let address = startup::selected_bus_address();
+        #[cfg(feature = "binary-frames")]
+        let mut binary_sequence = 0u64;
+        #[cfg(not(feature = "binary-frames"))]
         let acquisition_start_us = Instant::now().duration_since_epoch().as_micros() as u64;
+        #[cfg(not(feature = "binary-frames"))]
         let mut last_summary_us = acquisition_start_us;
         loop {
             if let Some(outcome) = acquisition::drain_pending(&mut mpu, &mut stats) {
+                #[cfg(feature = "binary-frames")]
+                {
+                    telemetry::emit_binary_sample_frame(
+                        address,
+                        &mut binary_sequence,
+                        outcome.sample.as_ref(),
+                        outcome.successful_sample_timestamp_us,
+                    );
+                }
+                #[cfg(not(feature = "binary-frames"))]
                 if let Some(raw) = outcome.sample {
                     telemetry::maybe_log_raw_example(&stats, &raw, outcome.consumed_timestamp_us);
                 }
             }
-            let now = Instant::now().duration_since_epoch().as_micros() as u64;
-            if now.saturating_sub(last_summary_us) >= telemetry::SUMMARY_PERIOD_US {
-                telemetry::log_acquisition_summary(&stats, acquisition_start_us, now);
-                last_summary_us = now;
+            #[cfg(not(feature = "binary-frames"))]
+            {
+                let now = Instant::now().duration_since_epoch().as_micros() as u64;
+                if now.saturating_sub(last_summary_us) >= telemetry::SUMMARY_PERIOD_US {
+                    telemetry::log_acquisition_summary(&stats, acquisition_start_us, now);
+                    last_summary_us = now;
+                }
             }
         }
     }
