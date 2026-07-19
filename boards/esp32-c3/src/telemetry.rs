@@ -413,10 +413,11 @@ mod tests {
     }
 
     #[test]
-    fn backlog_batching_emits_at_most_one_sample_frame() {
+    fn one_drain_outcome_emits_at_most_one_frame() {
         let mut sequence = 0u64;
         let raw = sample([10, 20, 30], 40, [50, 60, 70]);
-        // One successful drain outcome still yields one frame regardless of batch size.
+        // One successful drain outcome still yields one frame (batching is covered
+        // in acquisition::tests with batch_count > 1).
         let frames: Vec<_> = [Some(&raw)]
             .into_iter()
             .filter_map(|sample| {
