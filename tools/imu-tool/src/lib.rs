@@ -327,9 +327,18 @@ pub fn monitor(
     println!("--- monitoring {port} @{baud}, Ctrl-C to quit ---");
     let mut stats = IntegrityStats::default();
     if mode == StreamMode::Binary {
+        // Timed + logged monitor is a recording session: fail closed on restart
+        // so two firmware epochs are not silently merged into one dataset.
+        // Interactive/unbounded monitor still continues after an explicit restart event.
+        let fail_on_stream_restart = duration.is_some() && log.is_some();
         let result = if let Some(f) = log.as_mut() {
-            // Monitor keeps going after a restart but surfaces it explicitly.
-            read_serial_binary_for(&mut *ser, duration, f, Some(&mut stats), false)
+            read_serial_binary_for(
+                &mut *ser,
+                duration,
+                f,
+                Some(&mut stats),
+                fail_on_stream_restart,
+            )
         } else {
             read_serial_binary_for(
                 &mut *ser,
@@ -951,7 +960,10 @@ impl BinaryFrameDecoder {
             let seq = u64::from_le_bytes(self.buf[6..14].try_into().unwrap());
             let ts = u64::from_le_bytes(self.buf[14..22].try_into().unwrap());
             if let (Some(prev), Some(prev_ts)) = (self.last_seq, self.last_timestamp_us) {
-                let is_restart = seq == 0 && prev != 0 && ts < prev_ts;
+                // Device Instant timestamps are monotonic within one boot. Any
+                // regression means a new firmware epoch (reset), even if the
+                // first post-reboot frame is not sequence 0 (host missed early frames).
+                let is_restart = ts < prev_ts;
                 if is_restart {
                     ev.push(BinaryDecodeEvent::StreamRestart {
                         previous_sequence: prev,
@@ -2043,6 +2055,55 @@ mod tests {
             !ev.iter()
                 .any(|e| matches!(e, BinaryDecodeEvent::Warning(w) if w.contains("sequence gap"))),
             "restart must not be reported as a plain sequence gap"
+        );
+    }
+
+    #[test]
+    fn binary_decoder_restart_on_timestamp_regression_even_if_seq_not_zero() {
+        // Host may miss early post-reboot frames; first seen seq need not be 0.
+        let mut d = BinaryFrameDecoder::new();
+        let old = sample_with_timing(Some(3.646193), Some(586));
+        let fresh = sample_with_timing(Some(0.800000), Some(50));
+        assert!(matches!(
+            d.push(&encode_binary_frame(&old)).as_slice(),
+            [BinaryDecodeEvent::Sample(_)]
+        ));
+        let ev = d.push(&encode_binary_frame(&fresh));
+        assert!(
+            ev.iter().any(|e| matches!(
+                e,
+                BinaryDecodeEvent::StreamRestart {
+                    previous_sequence: 586,
+                    current_sequence: 50,
+                }
+            )),
+            "expected restart from timestamp regression, got {ev:?}"
+        );
+        assert!(
+            !ev.iter()
+                .any(|e| matches!(e, BinaryDecodeEvent::Warning(w) if w.contains("sequence gap"))),
+            "timestamp regression must not be downgraded to sequence gap"
+        );
+    }
+
+    #[test]
+    fn binary_decoder_sequence_gap_without_timestamp_regression_is_not_restart() {
+        let mut d = BinaryFrameDecoder::new();
+        let a = sample_with_timing(Some(1.0), Some(10));
+        let b = sample_with_timing(Some(1.025), Some(15)); // lost frames, same boot
+        assert!(matches!(
+            d.push(&encode_binary_frame(&a)).as_slice(),
+            [BinaryDecodeEvent::Sample(_)]
+        ));
+        let ev = d.push(&encode_binary_frame(&b));
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, BinaryDecodeEvent::Warning(w) if w.contains("sequence gap")))
+        );
+        assert!(
+            !ev.iter()
+                .any(|e| matches!(e, BinaryDecodeEvent::StreamRestart { .. })),
+            "monotonic timestamps must not look like a firmware restart"
         );
     }
 
