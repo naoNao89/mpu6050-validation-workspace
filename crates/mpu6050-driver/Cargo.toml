@@ -1,12 +1,12 @@
 [package]
 name = "mpu6050-driver"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT"
-description = "no_std embedded-hal 1.0 driver for the MPU-6050 IMU"
-repository = "https://github.com/naoNao89/mpu6050-drivers"
-homepage = "https://github.com/naoNao89/mpu6050-drivers"
+description = "A no_std embedded-hal 1.0 driver for configuring and reading MPU-6050 IMUs"
+repository = "https://github.com/naoNao89/mpu6050-validation-workspace"
+homepage = "https://github.com/naoNao89/mpu6050-validation-workspace"
 documentation = "https://docs.rs/mpu6050-driver"
 readme = "README.md"
 keywords = ["mpu6050", "imu", "embedded-hal", "sensor", "no-std"]

@@ -1,6 +1,6 @@
 # mpu6050-driver
 
-[![CI](https://img.shields.io/github/actions/workflow/status/naoNao89/mpu6050-drivers/ci.yml?branch=main&label=CI&logo=github)](https://github.com/naoNao89/mpu6050-drivers/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/naoNao89/mpu6050-validation-workspace/ci.yml?branch=main&label=CI&logo=github)](https://github.com/naoNao89/mpu6050-validation-workspace/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/mpu6050-driver.svg)](https://crates.io/crates/mpu6050-driver)
 [![docs.rs](https://img.shields.io/docsrs/mpu6050-driver)](https://docs.rs/mpu6050-driver)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -68,7 +68,7 @@ cargo run --example stationary_usability
 
 ```toml
 [dependencies]
-mpu6050-driver = "0.1"
+mpu6050-driver = "0.1.1"
 ```
 
 ## Validating that a module is usable
@@ -91,7 +91,7 @@ fraction, and JSON verdicts live in the workspace `imu-tool`
 ## Validation workspace
 
 Developed inside
-[naoNao89/mpu6050-drivers](https://github.com/naoNao89/mpu6050-drivers)
+[naoNao89/mpu6050-validation-workspace](https://github.com/naoNao89/mpu6050-validation-workspace)
 (ESP32 firmware + `imu-tool`). Those paths are **not** part of this package.
 
 ## License

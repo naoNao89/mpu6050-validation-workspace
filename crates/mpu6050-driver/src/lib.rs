@@ -57,7 +57,7 @@
 //! power, address, or configuration problems — not a branding verdict.
 //!
 //! Multi-sample threshold reports live in the
-//! [mpu6050-drivers](https://github.com/naoNao89/mpu6050-drivers) workspace
+//! [mpu6050-validation-workspace](https://github.com/naoNao89/mpu6050-validation-workspace)
 //! (`imu-tool`), not in this published crate.
 
 #![no_std]
