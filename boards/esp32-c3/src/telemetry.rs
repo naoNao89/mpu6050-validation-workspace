@@ -26,8 +26,14 @@ pub(crate) fn maybe_log_raw_example(
 ) {
     if stats.successful_samples <= RAW_EXAMPLE_LIMIT {
         let sample_timestamp_us = stats.last_sample_us.unwrap_or_default();
+        // Board layer owns stamps; driver ImuSample is physical-only (f32).
+        let stamped = crate::stamped::StampedSample::from_raw(
+            *raw,
+            sample_timestamp_us,
+            stats.successful_samples.saturating_sub(1),
+        );
         println!(
-            "RAW consumed_events={} accel=({}, {}, {}) temp_raw={} gyro=({}, {}, {}) consumed_timestamp_us={} sample_timestamp_us={}",
+            "RAW consumed_events={} accel=({}, {}, {}) temp_raw={} gyro=({}, {}, {}) consumed_timestamp_us={} sample_timestamp_us={} sequence={} accel_mag_g={:.4} gyro_mag_dps={:.3}",
             stats.consumed,
             raw.accel[0],
             raw.accel[1],
@@ -37,7 +43,10 @@ pub(crate) fn maybe_log_raw_example(
             raw.gyro[1],
             raw.gyro[2],
             consumed_timestamp_us,
-            sample_timestamp_us
+            stamped.timestamp_us,
+            stamped.sequence,
+            stamped.accel_magnitude_g(),
+            stamped.gyro_magnitude_dps()
         );
     }
 }

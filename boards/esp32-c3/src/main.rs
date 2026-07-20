@@ -11,6 +11,7 @@ fn main() {}
 mod acquisition;
 mod board;
 mod boot;
+mod stamped;
 mod startup;
 mod telemetry;
 
