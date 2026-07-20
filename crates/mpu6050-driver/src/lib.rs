@@ -522,8 +522,8 @@ mod tests {
     #[test]
     fn imu_sample_magnitudes_match_vector_norm() {
         let sample = ImuSample::from_g_dps([3.0, 4.0, 0.0], [0.0, 5.0, 12.0]);
-        assert!((sample.accel_magnitude_g() - 5.0).abs() < 1e-12);
-        assert!((sample.gyro_magnitude_dps() - 13.0).abs() < 1e-12);
+        assert!((sample.accel_magnitude_g() - 5.0).abs() < 1e-6);
+        assert!((sample.gyro_magnitude_dps() - 13.0).abs() < 1e-6);
     }
 
     #[test]
@@ -533,15 +533,13 @@ mod tests {
         assert_eq!(sample.accel_g, [1.0, -1.0, 0.5]);
         assert_eq!(sample.gyro_dps[0], 1.0);
         assert_eq!(sample.gyro_dps[1], -1.0);
-        assert!((sample.gyro_dps[2] - (65.0 / 131.0)).abs() < f64::EPSILON);
-        assert_eq!(sample.timestamp_s, None);
-        assert_eq!(sample.sequence, None);
+        assert!((sample.gyro_dps[2] - (65.0 / 131.0)).abs() < f32::EPSILON);
     }
 
     #[test]
     fn raw_temperature_converts_to_degrees_celsius() {
         let raw = RawAccelGyroTemp::new([0; 3], 340, [0; 3]);
-        assert!((raw.temp_degrees_c() - 37.53).abs() < f64::EPSILON);
+        assert!((raw.temp_degrees_c() - 37.53).abs() < f32::EPSILON);
     }
 
     #[test]

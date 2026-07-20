@@ -68,8 +68,14 @@ cargo run --example stationary_usability
 
 ```toml
 [dependencies]
-mpu6050-driver = "0.1.1"
+mpu6050-driver = "0.2"
 ```
+
+### Breaking changes in 0.2
+
+- `ImuSample` is physical-only: `accel_g` / `gyro_dps` as `[f32; 3]`.
+- Removed `timestamp_s` and `sequence` (acquisition/app layer owns stamps).
+- Temperature helpers use `f32`.
 
 ## Validating that a module is usable
 

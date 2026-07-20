@@ -10,9 +10,9 @@
 use mpu6050_driver::{ImuSample, RawAccelGyroTemp, raw_to_imu_sample};
 
 /// Loose single-sample gates for a quick smoke check (not metrology).
-const ACCEL_MAG_MIN_G: f64 = 0.85;
-const ACCEL_MAG_MAX_G: f64 = 1.15;
-const GYRO_MAG_MAX_DPS: f64 = 25.0;
+const ACCEL_MAG_MIN_G: f32 = 0.85;
+const ACCEL_MAG_MAX_G: f32 = 1.15;
+const GYRO_MAG_MAX_DPS: f32 = 25.0;
 
 fn looks_usable_while_still(sample: &ImuSample) -> bool {
     let a = sample.accel_magnitude_g();

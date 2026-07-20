@@ -2,38 +2,43 @@ use embedded_hal::i2c::I2c;
 
 use crate::{Mpu6050, registers};
 
-pub const ACCEL_LSB_PER_G_2G: f64 = 16_384.0;
-pub const GYRO_LSB_PER_DPS_250DPS: f64 = 131.0;
-pub const TEMP_LSB_PER_DEG_C: f64 = 340.0;
-pub const TEMP_OFFSET_DEG_C: f64 = 36.53;
+pub const ACCEL_LSB_PER_G_2G: f32 = 16_384.0;
+pub const GYRO_LSB_PER_DPS_250DPS: f32 = 131.0;
+pub const TEMP_LSB_PER_DEG_C: f32 = 340.0;
+pub const TEMP_OFFSET_DEG_C: f32 = 36.53;
 
-#[derive(Clone, Debug)]
+/// Physical IMU sample in engineering units only.
+///
+/// Stream metadata (timestamp, sequence) is an acquisition concern. Applications
+/// that need it should wrap this type, for example:
+///
+/// ```ignore
+/// struct StampedSample {
+///     sample: ImuSample,
+///     timestamp_us: u64,
+///     sequence: u64,
+/// }
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImuSample {
-    pub accel_g: [f64; 3],
-    pub gyro_dps: [f64; 3],
-    pub timestamp_s: Option<f64>,
-    pub sequence: Option<u64>,
+    pub accel_g: [f32; 3],
+    pub gyro_dps: [f32; 3],
 }
 
 impl ImuSample {
-    pub fn from_g_dps(accel_g: [f64; 3], gyro_dps: [f64; 3]) -> Self {
-        Self {
-            accel_g,
-            gyro_dps,
-            timestamp_s: None,
-            sequence: None,
-        }
+    pub fn from_g_dps(accel_g: [f32; 3], gyro_dps: [f32; 3]) -> Self {
+        Self { accel_g, gyro_dps }
     }
 
-    pub fn from_si(accel_mps2: [f64; 3], gyro_radps: [f64; 3]) -> Self {
-        const STANDARD_GRAVITY_MPS2: f64 = 9.80665;
+    pub fn from_si(accel_mps2: [f32; 3], gyro_radps: [f32; 3]) -> Self {
+        const STANDARD_GRAVITY_MPS2: f32 = 9.80665;
         Self::from_g_dps(
             accel_mps2.map(|v| v / STANDARD_GRAVITY_MPS2),
-            gyro_radps.map(f64::to_degrees),
+            gyro_radps.map(f32::to_degrees),
         )
     }
 
-    pub fn new(accel_g: [f64; 3], gyro_dps: [f64; 3]) -> Self {
+    pub fn new(accel_g: [f32; 3], gyro_dps: [f32; 3]) -> Self {
         Self::from_g_dps(accel_g, gyro_dps)
     }
 
@@ -42,17 +47,17 @@ impl ImuSample {
     /// While the board is stationary, this is typically near **1 g** (gravity).
     /// Use it as a lightweight usability check; it is not clone/authenticity
     /// detection and does not replace multi-sample host analysis.
-    pub fn accel_magnitude_g(&self) -> f64 {
+    pub fn accel_magnitude_g(&self) -> f32 {
         let [x, y, z] = self.accel_g;
-        libm::sqrt(x * x + y * y + z * z)
+        libm::sqrtf(x * x + y * y + z * z)
     }
 
     /// Gyroscope magnitude \(\|\omega\|\) in °/s.
     ///
     /// While stationary, expect this near zero aside from bias and noise.
-    pub fn gyro_magnitude_dps(&self) -> f64 {
+    pub fn gyro_magnitude_dps(&self) -> f32 {
         let [x, y, z] = self.gyro_dps;
-        libm::sqrt(x * x + y * y + z * z)
+        libm::sqrtf(x * x + y * y + z * z)
     }
 }
 
@@ -73,8 +78,8 @@ impl RawAccelGyroTemp {
         raw_to_imu_sample(self)
     }
 
-    pub fn temp_degrees_c(self) -> f64 {
-        self.temp as f64 / TEMP_LSB_PER_DEG_C + TEMP_OFFSET_DEG_C
+    pub fn temp_degrees_c(self) -> f32 {
+        self.temp as f32 / TEMP_LSB_PER_DEG_C + TEMP_OFFSET_DEG_C
     }
 
     pub const fn is_suspicious(self) -> bool {
@@ -198,8 +203,8 @@ const fn is_power_of_two_minus_one_sentinel(value: i16) -> bool {
 
 pub fn raw_to_imu_sample(raw: RawAccelGyroTemp) -> ImuSample {
     ImuSample::from_g_dps(
-        raw.accel.map(|v| v as f64 / ACCEL_LSB_PER_G_2G),
-        raw.gyro.map(|v| v as f64 / GYRO_LSB_PER_DPS_250DPS),
+        raw.accel.map(|v| v as f32 / ACCEL_LSB_PER_G_2G),
+        raw.gyro.map(|v| v as f32 / GYRO_LSB_PER_DPS_250DPS),
     )
 }
 
