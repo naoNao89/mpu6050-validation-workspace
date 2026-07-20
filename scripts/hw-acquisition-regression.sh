@@ -149,9 +149,27 @@ missed = last_summary_field("missed_or_coalesced_events")
 i2c_err = last_summary_field("total_i2c_errors")
 max_pending = last_summary_field("max_pending")
 isr_total = last_summary_field("isr_data_ready_total")
+pending_sat = last_summary_field("events_unrecorded_due_to_pending_saturation")
+first_sample_us = last_summary_field("first_sample_us")
+last_sample_us = last_summary_field("last_sample_us")
+watchdog = count(r"(?i)watchdog")
+# Binary integrity_stats: clean_samples ≈ CRC-valid decoded frames from imu-tool.
+suspicious = None
+if integrity:
+    m = re.search(r"suspicious_events=(\d+)", integrity)
+    if m:
+        suspicious = int(m.group(1))
+    m = re.search(r"samples=(\d+)", integrity)
+    integrity_samples = int(m.group(1)) if m else None
+else:
+    integrity_samples = None
 
 # Pass gates (hardware regression contract). Binary firmware omits text startup
 # / acquisition_summary lines; those gates apply to text mode only.
+#
+# IMPORTANT: board A/B proves acquisition/transport regression safety after the
+# 0.2 consumer migration. It does NOT prove i16→f32 conversion on-device (firmware
+# streams raw i16). Numerical f32 accuracy is host conversion_regression only.
 checks = []
 def check(name, ok, detail=""):
     checks.append((name, bool(ok), detail))
@@ -159,6 +177,7 @@ def check(name, ok, detail=""):
 is_binary = mode == "binary"
 check("no_acquisition_blocked", blocked == 0, f"blocked_lines={blocked}")
 check("no_panic_token", panics == 0, f"panic_lines={panics}")
+check("no_watchdog_token", watchdog == 0, f"watchdog_lines={watchdog}")
 check(
     "has_motion_evidence",
     bool(raw_lines) or (successful not in (None, "0")),
@@ -179,6 +198,12 @@ if not is_binary:
         check("successful_samples_gt_0", int(successful) > 0, successful)
     if missed is not None:
         check("missed_or_coalesced_zero", missed in ("0", "Some(0)"), missed)
+    if pending_sat is not None:
+        check(
+            "pending_saturation_zero",
+            pending_sat in ("0", "Some(0)"),
+            pending_sat,
+        )
     if i2c_err is not None:
         check("total_i2c_errors_zero", i2c_err in ("0", "Some(0)"), i2c_err)
     if max_pending is not None and max_pending.isdigit():
@@ -187,16 +212,26 @@ if not is_binary:
         m = re.search(r"([0-9]+(?:\.[0-9]+)?)", sample_rate)
         if m:
             rate = float(m.group(1))
+            # measured_sample_rate_hz uses first→last sample span, not wall-clock.
             check("sample_rate_190_210", 190.0 <= rate <= 210.0, sample_rate)
 else:
     # Binary stream contract: continuous frames + integrity + physical plausibility.
-    check("binary_raw_frames_gt_100", len(raw_lines) > 100, f"raw={len(raw_lines)}")
+    decoded = len(raw_lines)
+    check("binary_decoded_frames_gt_100", decoded > 100, f"decoded_frames={decoded}")
     check("binary_sequence_present", len(seqs) > 100, f"seqs={len(seqs)}")
     if clean is not None:
         check(
-            "integrity_clean_matches_raw",
-            clean == len(raw_lines) or clean == len(seqs),
-            f"clean={clean} raw={len(raw_lines)} seqs={len(seqs)}",
+            "binary_crc_valid_matches_decoded",
+            clean == decoded or clean == len(seqs),
+            f"crc_valid_frames={clean} decoded_frames={decoded} seqs={len(seqs)}",
+        )
+    if suspicious is not None:
+        check("binary_suspicious_events_zero", suspicious == 0, f"suspicious={suspicious}")
+    if integrity_samples is not None:
+        check(
+            "binary_integrity_samples_match_decoded",
+            integrity_samples == decoded,
+            f"integrity_samples={integrity_samples} decoded={decoded}",
         )
 
 if seqs:
@@ -207,10 +242,11 @@ if seqs:
     )
 if mags:
     check("accel_values_finite", finite_ok, f"n={len(mags)}")
+    # Host-side |a| from raw i16 in the log (not on-device f32 conversion).
     check(
         "stationary_accel_mag_inband_ge_95pct",
         (inband / len(mags)) >= 0.95,
-        f"inband={inband}/{len(mags)} mean={mag_mean:.4f}",
+        f"inband={inband}/{len(mags)} mean={mag_mean:.4f} note=host_i16_to_g",
     )
 
 failed = [c for c in checks if not c[1]]
@@ -222,21 +258,39 @@ out.append(f"label={label}")
 out.append(f"commit={commit}")
 out.append(f"port={port}")
 out.append(f"mode={mode}")
-out.append(f"duration_s={duration}")
+out.append(f"harness_wall_clock_capture_s={duration}")
+out.append(
+    "note=measured_sample_rate_hz uses first_successful_sample→last_successful_sample span, not wall-clock"
+)
+out.append(
+    "note=board_ab_proves_acquisition_transport_not_on_device_f32_conversion"
+)
 out.append(f"log={log_path}")
 out.append(f"data_ready_startup={startup or 'missing'}")
 out.append(f"measured_sample_rate_hz={sample_rate}")
+out.append(f"measured_rate_span_first_sample_us={first_sample_us}")
+out.append(f"measured_rate_span_last_sample_us={last_sample_us}")
 out.append(f"successful_samples={successful}")
 out.append(f"isr_data_ready_total={isr_total}")
 out.append(f"missed_or_coalesced_events={missed}")
+out.append(f"events_unrecorded_due_to_pending_saturation={pending_sat}")
 out.append(f"total_i2c_errors={i2c_err}")
 out.append(f"max_pending={max_pending}")
-out.append(f"raw_lines={len(raw_lines)}")
+out.append(f"decoded_frames_or_raw_lines={len(raw_lines)}")
+out.append(f"binary_crc_valid_frames={clean}")
+out.append(f"binary_suspicious_events={suspicious}")
 out.append(f"sequence_samples={len(seqs)}")
 out.append(f"sequence_gaps={gaps}")
-out.append(f"accel_mag_mean_g={mag_mean if mags else 'n/a'}")
-out.append(f"accel_mag_inband_0.8_1.2={inband if mags else 0}/{len(mags) if mags else 0}")
+out.append(f"first_diagnostic_raw_count={min(8, len(raw_lines)) if not is_binary else 'n/a'}")
+out.append(
+    f"host_i16_accel_mag_mean_g={mag_mean if mags else 'n/a'}"
+)
+out.append(
+    f"host_i16_accel_mag_inband_0.8_1.2={inband if mags else 0}/{len(mags) if mags else 0}"
+)
 out.append(f"integrity={integrity or 'missing'}")
+out.append(f"panic_lines={panics}")
+out.append(f"watchdog_lines={watchdog}")
 out.append("checks_begin")
 for name, ok, detail in checks:
     out.append(f"check {name}={'PASS' if ok else 'FAIL'} detail={detail}")
