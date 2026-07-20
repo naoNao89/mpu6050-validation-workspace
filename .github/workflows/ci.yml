@@ -52,6 +52,11 @@ jobs:
         run: cargo test --locked -p mpu6050-driver
       - name: Driver package dry run
         run: cargo publish -p mpu6050-driver --dry-run --locked
+      - name: Driver docs
+        if: runner.os == 'Linux'
+        run: cargo doc --locked -p mpu6050-driver --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
       - name: Host tests
         run: cargo test --locked -p imu-tool -p mpu6050-driver --all-features
       - name: Host clippy

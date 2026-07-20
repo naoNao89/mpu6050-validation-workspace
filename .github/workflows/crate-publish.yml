@@ -1,25 +1,57 @@
 name: crate publish
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
-      crate:
-        description: "Crate to publish"
-        required: true
-        type: choice
-        options:
-          - mpu6050-driver
-          - imu-tool
+      dry_run:
+        description: "Only run cargo publish --dry-run"
+        required: false
+        type: boolean
+        default: true
 
 jobs:
-  publish:
-    name: publish ${{ inputs.crate }}
+  publish-driver:
+    name: publish mpu6050-driver
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@v2
-      - name: Publish dry run
-        run: cargo publish -p ${{ inputs.crate }} --dry-run --locked
+
+      - name: Resolve crate version
+        id: crate
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import json,sys; pkgs=json.load(sys.stdin)['packages']; print(next(p['version'] for p in pkgs if p['name']=='mpu6050-driver'))")
+          status=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://crates.io/api/v1/crates/mpu6050-driver/${version}")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if [ "$status" = "200" ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "mpu6050-driver@${version} crates.io status=${status}"
+
+      - name: Verify package
+        if: steps.crate.outputs.published == 'false'
+        run: cargo publish -p mpu6050-driver --dry-run --locked
+
+      - name: Publish package
+        if: >
+          steps.crate.outputs.published == 'false' &&
+          (github.event_name == 'release' ||
+           (github.event_name == 'workflow_dispatch' && inputs.dry_run == false))
+        run: cargo publish -p mpu6050-driver --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Skip already-published version
+        if: steps.crate.outputs.published == 'true'
+        run: echo "mpu6050-driver@${{ steps.crate.outputs.version }} already on crates.io; nothing to do."
