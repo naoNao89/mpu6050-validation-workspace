@@ -16,10 +16,14 @@ impl Address {
     }
 }
 
+/// Decoded device family from the `WHO_AM_I` register.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Identity {
+    /// Classic MPU-6050 (`WHO_AM_I == 0x68`).
     Mpu6050,
+    /// MPU-6500-class response seen on some modules (`WHO_AM_I == 0x70`).
     Mpu6500Compatible,
+    /// Unrecognized `WHO_AM_I` value; raw reads may still work.
     Unknown(u8),
 }
 
@@ -37,12 +41,17 @@ const fn decode_identity(id: u8) -> Identity {
     }
 }
 
+/// Accelerometer full-scale range (`ACCEL_CONFIG` AFS_SEL).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum AccelRange {
+    /// ±2 g
     G2 = 0,
+    /// ±4 g
     G4 = 1,
+    /// ±8 g
     G8 = 2,
+    /// ±16 g
     G16 = 3,
 }
 
@@ -52,12 +61,17 @@ impl AccelRange {
     }
 }
 
+/// Gyroscope full-scale range (`GYRO_CONFIG` FS_SEL).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum GyroRange {
+    /// ±250 °/s
     Dps250 = 0,
+    /// ±500 °/s
     Dps500 = 1,
+    /// ±1000 °/s
     Dps1000 = 2,
+    /// ±2000 °/s
     Dps2000 = 3,
 }
 
@@ -140,14 +154,17 @@ impl<I2C> Mpu6050<I2C>
 where
     I2C: I2c,
 {
+    /// Reads the raw `WHO_AM_I` register byte.
     pub fn who_am_i(&mut self) -> Result<u8, I2C::Error> {
         self.read_register(registers::WHO_AM_I)
     }
 
+    /// Decodes [`Identity`] from `WHO_AM_I`.
     pub fn identity(&mut self) -> Result<Identity, I2C::Error> {
         self.who_am_i().map(Identity::from_who_am_i)
     }
 
+    /// Sets accelerometer full-scale range.
     pub fn set_accel_range(&mut self, range: AccelRange) -> Result<(), I2C::Error> {
         self.write_masked(
             registers::ACCEL_CONFIG,
@@ -156,6 +173,7 @@ where
         )
     }
 
+    /// Sets gyroscope full-scale range.
     pub fn set_gyro_range(&mut self, range: GyroRange) -> Result<(), I2C::Error> {
         self.write_masked(
             registers::GYRO_CONFIG,

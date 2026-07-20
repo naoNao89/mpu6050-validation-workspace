@@ -2,9 +2,27 @@
 name = "mpu6050-driver"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.91"
 license = "MIT"
-description = "no_std embedded-hal driver for the MPU-6050 IMU"
+description = "no_std embedded-hal 1.0 driver for the MPU-6050 IMU"
 repository = "https://github.com/naoNao89/mpu6050-drivers"
+homepage = "https://github.com/naoNao89/mpu6050-drivers"
+documentation = "https://docs.rs/mpu6050-driver"
+readme = "README.md"
+keywords = ["mpu6050", "imu", "embedded-hal", "sensor", "no-std"]
+categories = ["embedded", "hardware-support", "no-std"]
+include = [
+    "src/**/*",
+    "tests/**/*",
+    "examples/**/*",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+]
 
 [dependencies]
 embedded-hal = "1.0"
+libm = "0.2"
+
+[package.metadata.docs.rs]
+targets = []

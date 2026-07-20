@@ -58,7 +58,9 @@ impl embedded_hal::i2c::I2c for ApiI2c {
 #[test]
 fn crate_root_public_api_still_imports() {
     let raw = RawAccelGyroTemp::new([0, 0, 16_384], 0, [0, 0, 131]);
-    let _sample = raw_to_imu_sample(raw);
+    let sample = raw_to_imu_sample(raw);
+    assert!((sample.accel_magnitude_g() - 1.0).abs() < 1e-9);
+    assert!((sample.gyro_magnitude_dps() - 1.0).abs() < 1e-9);
     Mpu6050::new((), Address::Ad0Low).release();
 
     let diagnostics = FifoReadDiagnostics {

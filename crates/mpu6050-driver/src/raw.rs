@@ -36,6 +36,24 @@ impl ImuSample {
     pub fn new(accel_g: [f64; 3], gyro_dps: [f64; 3]) -> Self {
         Self::from_g_dps(accel_g, gyro_dps)
     }
+
+    /// Acceleration magnitude \(\|a\| = \sqrt{a_x^2 + a_y^2 + a_z^2}\) in g.
+    ///
+    /// While the board is stationary, this is typically near **1 g** (gravity).
+    /// Use it as a lightweight usability check; it is not clone/authenticity
+    /// detection and does not replace multi-sample host analysis.
+    pub fn accel_magnitude_g(&self) -> f64 {
+        let [x, y, z] = self.accel_g;
+        libm::sqrt(x * x + y * y + z * z)
+    }
+
+    /// Gyroscope magnitude \(\|\omega\|\) in °/s.
+    ///
+    /// While stationary, expect this near zero aside from bias and noise.
+    pub fn gyro_magnitude_dps(&self) -> f64 {
+        let [x, y, z] = self.gyro_dps;
+        libm::sqrt(x * x + y * y + z * z)
+    }
 }
 
 /// Raw accel/temp/gyro register block read from ACCEL_XOUT_H.
@@ -189,6 +207,7 @@ impl<I2C> Mpu6050<I2C>
 where
     I2C: I2c,
 {
+    /// Reads the 14-byte accel/temp/gyro block starting at `ACCEL_XOUT_H`.
     pub fn read_raw_accel_gyro_temp(&mut self) -> Result<RawAccelGyroTemp, I2C::Error> {
         let mut bytes = [0_u8; 14];
         self.i2c

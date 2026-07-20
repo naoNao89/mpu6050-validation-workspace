@@ -1,3 +1,65 @@
+//! # mpu6050-driver
+//!
+//! `no_std` [embedded-hal](https://docs.rs/embedded-hal) 1.0 driver for the
+//! InvenSense MPU-6050 6-axis IMU.
+//!
+//! ## Quick start
+//!
+//! ```no_run
+//! use mpu6050_driver::{
+//!     AccelRange, Address, Dlpf, GyroRange, Mpu6050, raw_to_imu_sample,
+//! };
+//!
+//! # fn run<I2C>(i2c: I2C) -> Result<(), I2C::Error>
+//! # where
+//! #     I2C: embedded_hal::i2c::I2c,
+//! # {
+//! let mut mpu = Mpu6050::new(i2c, Address::Ad0Low);
+//!
+//! mpu.wake()?;
+//! mpu.set_accel_range(AccelRange::G2)?;
+//! mpu.set_gyro_range(GyroRange::Dps250)?;
+//! mpu.set_dlpf(Dlpf::Cfg2)?;
+//! mpu.set_sample_rate_divider(4)?; // ~200 Hz with Cfg2
+//!
+//! let _identity = mpu.identity()?;
+//! let raw = mpu.read_raw_accel_gyro_temp()?;
+//! let _sample = raw_to_imu_sample(raw);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Provide any type that implements [`embedded_hal::i2c::I2c`]. Use
+//! [`Address::Ad0Low`] (`0x68`) or [`Address::Ad0High`] (`0x69`) according to the
+//! AD0 pin wiring.
+//!
+//! ## What this crate covers
+//!
+//! - Power: [`Mpu6050::wake`], [`Mpu6050::reset`]
+//! - Identity: [`Mpu6050::who_am_i`], [`Mpu6050::identity`]
+//! - Ranges / filter / rate: [`Mpu6050::set_accel_range`], [`Mpu6050::set_gyro_range`],
+//!   [`Mpu6050::set_dlpf`], [`Mpu6050::set_sample_rate_divider`]
+//! - Motion reads: [`Mpu6050::read_raw_accel_gyro_temp`], [`Mpu6050::read_raw_checked`],
+//!   [`Mpu6050::read_raw_with_retry`]
+//! - FIFO and interrupts: see the `fifo` and interrupt helpers on [`Mpu6050`]
+//! - Conversion: [`raw_to_imu_sample`], [`RawAccelGyroTemp::temp_degrees_c`]
+//! - Magnitudes: [`ImuSample::accel_magnitude_g`], [`ImuSample::gyro_magnitude_dps`]
+//!
+//! ## Is this module usable?
+//!
+//! This crate does **not** authenticate chips or detect clones. [`Mpu6050::identity`]
+//! only decodes `WHO_AM_I`.
+//!
+//! After bring-up, hold the board still and check
+//! [`ImuSample::accel_magnitude_g`] (near **1 g**) and
+//! [`ImuSample::gyro_magnitude_dps`] (near zero aside from bias/noise). See the
+//! `stationary_usability` example. Large sustained errors usually mean wiring,
+//! power, address, or configuration problems — not a branding verdict.
+//!
+//! Multi-sample threshold reports live in the
+//! [mpu6050-drivers](https://github.com/naoNao89/mpu6050-drivers) workspace
+//! (`imu-tool`), not in this published crate.
+
 #![no_std]
 
 use embedded_hal::i2c::I2c;
@@ -17,16 +79,22 @@ pub use raw::{
     RawRetryPolicy, RawSampleSuspicion, TEMP_LSB_PER_DEG_C, TEMP_OFFSET_DEG_C, raw_to_imu_sample,
 };
 
+/// Blocking MPU-6050 driver over an [`embedded_hal::i2c::I2c`] bus.
+///
+/// Construct with [`Mpu6050::new`], call [`Mpu6050::wake`] after power-up, then
+/// configure ranges/filter and read samples.
 pub struct Mpu6050<I2C> {
     i2c: I2C,
     address: Address,
 }
 
 impl<I2C> Mpu6050<I2C> {
+    /// Creates a driver handle. Does not touch the bus.
     pub const fn new(i2c: I2C, address: Address) -> Self {
         Self { i2c, address }
     }
 
+    /// Consumes the driver and returns the underlying I2C peripheral.
     pub fn release(self) -> I2C {
         self.i2c
     }
@@ -449,6 +517,13 @@ mod tests {
         );
         assert!(diagnostics.fifo_overflow_seen);
         assert!(!diagnostics.frame_usable());
+    }
+
+    #[test]
+    fn imu_sample_magnitudes_match_vector_norm() {
+        let sample = ImuSample::from_g_dps([3.0, 4.0, 0.0], [0.0, 5.0, 12.0]);
+        assert!((sample.accel_magnitude_g() - 5.0).abs() < 1e-12);
+        assert!((sample.gyro_magnitude_dps() - 13.0).abs() < 1e-12);
     }
 
     #[test]
