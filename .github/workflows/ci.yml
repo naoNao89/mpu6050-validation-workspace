@@ -83,6 +83,20 @@ jobs:
       - name: ESP32-P4 firmware check
         run: make check-firmware-p4
 
+  target-regression:
+    name: ESP32-C3 target regression compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv32imc-unknown-none-elf
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Build ESP32-C3 target regression tests
+        run: make target-test-build
+
   embedded:
     name: firmware size budget CI
     if: github.event_name == 'workflow_dispatch' && inputs.external-board-check

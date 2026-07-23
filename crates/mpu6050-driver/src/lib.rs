@@ -71,6 +71,10 @@ mod raw;
 mod registers;
 mod self_test;
 
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_support;
+
 pub use config::{AccelRange, Address, Dlpf, DlpfReadError, GyroRange, Identity};
 pub use fifo::{FIFO_ACCEL_GYRO_FRAME_BYTES, FifoReadDiagnostics};
 pub use interrupt::{IntStatus, InterruptEnable};
@@ -528,20 +532,12 @@ mod tests {
 
     #[test]
     fn raw_values_convert_to_default_accel_and_gyro_units() {
-        let raw = RawAccelGyroTemp::new([16_384, -16_384, 8_192], 0, [131, -131, 65]);
-        let sample = raw.to_imu_sample();
-        assert_eq!(sample.accel_g, [1.0, -1.0, 0.5]);
-        assert_eq!(sample.gyro_dps[0], 1.0);
-        assert_eq!(sample.gyro_dps[1], -1.0);
-        assert!((sample.gyro_dps[2] - (65.0 / 131.0)).abs() < f64::EPSILON);
-        assert_eq!(sample.timestamp_s, None);
-        assert_eq!(sample.sequence, None);
+        crate::test_support::raw_values_convert_to_default_accel_and_gyro_units();
     }
 
     #[test]
     fn raw_temperature_converts_to_degrees_celsius() {
-        let raw = RawAccelGyroTemp::new([0; 3], 340, [0; 3]);
-        assert!((raw.temp_degrees_c() - 37.53).abs() < f64::EPSILON);
+        crate::test_support::raw_temperature_converts_to_degrees_celsius();
     }
 
     #[test]

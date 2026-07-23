@@ -51,3 +51,22 @@ target:
 ```sh
 make check-firmware
 ```
+
+## On-target conversion regression tests
+
+These target regression tests run on an ESP32-C3 and execute only the driver's
+pure raw accel/gyro and temperature conversion logic. They do not access an
+MPU6050 or use I2C.
+
+Build the target regression tests without flashing from the repository root:
+
+```sh
+make target-test-build
+```
+
+Build, flash, and run the target regression tests on an ESP32-C3 from the
+repository root:
+
+```sh
+make target-test
+```

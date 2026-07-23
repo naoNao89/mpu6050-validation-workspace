@@ -24,5 +24,8 @@ include = [
 embedded-hal = "1.0"
 libm = "0.2"
 
+[features]
+test-support = []
+
 [package.metadata.docs.rs]
 targets = []
