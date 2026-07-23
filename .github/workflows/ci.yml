@@ -74,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: riscv32imafc-unknown-none-elf
       - uses: Swatinem/rust-cache@v2
@@ -111,7 +111,7 @@ jobs:
           cache-on-failure: true
       - name: ESP32-C3 firmware check
         run: CARGO_TARGET_DIR=target cargo --config 'patch.crates-io.mpu6050-driver.path="crates/mpu6050-driver"' check --locked --manifest-path boards/esp32-c3/Cargo.toml --target riscv32imc-unknown-none-elf
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: riscv32imafc-unknown-none-elf
       - name: ESP32-P4 firmware check
