@@ -40,7 +40,7 @@ P4_BIN := target/$(P4_TARGET)/release/mpu6050-esp32p4-bringup
 
 .DEFAULT_GOAL := help
 
-.PHONY: help fmt check check-host check-firmware check-firmware-p4 test clippy build build-p4 build-p4-full flash flash-p4 monitor monitor-p4 run run-p4 clean capture analyze stationary-suite orientation-capture orientation-analyze sixface-capture sixface-analyze sixface-calibration export-csv allan psd smoke validate-stationary validate-orientation imu-tool-smoke
+.PHONY: help fmt check check-host check-firmware check-firmware-p4 test clippy build build-p4 build-p4-full flash flash-p4 monitor monitor-p4 run run-p4 target-test-build target-test clean capture analyze stationary-suite orientation-capture orientation-analyze sixface-capture sixface-analyze sixface-calibration export-csv allan psd smoke validate-stationary validate-orientation imu-tool-smoke
 
 help:
 	@printf '%s\n' 'MPU6050 driver workspace'
@@ -59,6 +59,8 @@ help:
 	@printf '%s\n' '  make monitor PORT=...            Monitor serial output'
 	@printf '%s\n' '  make monitor PORT=... DURATION=300 MODE=text|binary'
 	@printf '%s\n' '  make run PORT=... DURATION=300 MODE=text|binary'
+	@printf '%s\n' '  make target-test-build            Build target regression tests for ESP32-C3'
+	@printf '%s\n' '  make target-test                  Run target regression tests on ESP32-C3'
 	@printf '%s\n' ''
 	@printf '%s\n' 'ESP32-P4:'
 	@printf '%s\n' '  Targets ESP32-P4 rev v1.3/ECO2/pre-v3.0 by default; set P4_CHIP_REVISION to match your silicon.'
@@ -141,6 +143,12 @@ monitor-p4:
 
 run:
 	PORT="$(PORT)" BAUD="$(BAUD)" TARGET="$(TARGET)" LOG_DIR="$(LOG_DIR)" LOG_FILE="$(LOG_FILE)" DURATION="$(DURATION)" MODE="$(MODE)" NO_FLASH="$(NO_FLASH)" NO_MONITOR="$(NO_MONITOR)" NO_LOG="$(NO_LOG)" ./run.sh
+
+target-test-build:
+	cd boards/esp32-c3 && env -u RUSTFLAGS cargo --config 'patch.crates-io.mpu6050-driver.path="../../crates/mpu6050-driver"' test --locked --release --target riscv32imc-unknown-none-elf --test target-regression --no-run
+
+target-test:
+	cd boards/esp32-c3 && env -u RUSTFLAGS cargo --config 'patch.crates-io.mpu6050-driver.path="../../crates/mpu6050-driver"' test --locked --release --target riscv32imc-unknown-none-elf --test target-regression
 
 run-p4: flash-p4
 	PORT="$(PORT)" ./scripts/esp-port.sh sh -c 'cargo run -p imu-tool -- monitor --port "$$ESP_PORT" --baud "$(BAUD)" $(if $(DURATION),--duration "$(DURATION)") $(if $(LOG_FILE),--out "$(LOG_FILE)") --mode "$(MODE)"'
